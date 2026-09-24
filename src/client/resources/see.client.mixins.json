@@ -1,0 +1,18 @@
+{
+  "required": true,
+  "package": "com.sinkie114.client.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "SlotAccessor",
+    "ServerPlayerAccessor",
+    "InventoryClickGuard",
+    "ArrowAccessor",
+    "EntityDataAccessor",
+    "VillagerHandProtectionMixin",
+    "VillagerTradeDisplayMixin",
+    "VillagerBonemealDisplayMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

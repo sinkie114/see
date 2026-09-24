@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "see-test",
+  "version": "1.0.0",
+  "name": "Entity inspector regression tests",
+  "environment": "client",
+  "entrypoints": {
+    "fabric-client-gametest": ["com.sinkie114.client.EntityInspectorTest"]
+  }
+}
