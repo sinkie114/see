@@ -2,6 +2,7 @@ package com.sinkie114.client;
 
 import com.sinkie114.See;
 import com.sinkie114.client.mixin.SlotAccessor;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.Entity;
@@ -180,6 +181,40 @@ public final class EntityDebugMenu extends AbstractContainerMenu {
         refreshFromEntity();
         return actual;
     }
+    /**
+     * Integrated server thread only. Replays the editor's changes (base → edited) onto the entity's current data,
+     * so fields that changed in the meantime keep their live values. A rejected load restores the previous data.
+     */
+    public EntityEditBridge.NbtResult writeEntityNbt(ServerPlayer player, EntityEditBridge.Session owner,
+                                                     CompoundTag base, CompoundTag edited) {
+        if (session == null || session != owner || !integrated || !ready || session.closed || player.containerMenu != this
+                || inventory.player != player || !validate(player)) throw new IllegalStateException("SEE 目标实体或容器已失效");
+        if (target instanceof Player) throw new IllegalStateException("原版不允许修改玩家数据，玩家 NBT 只能查看");
+        CompoundTag before = EntitySnapshot.saveNbt(target);
+        NbtTree.Merge merge = NbtTree.merge(base, edited, before);
+        if (merge.changed().isEmpty()) throw new IllegalStateException("没有待同步的修改");
+        String rejected = NbtTree.invalidVectors(merge.result());
+        if (!rejected.isEmpty()) throw new IllegalStateException(rejected);
+        try {
+            EntitySnapshot.loadNbt(target, merge.result());
+        } catch (RuntimeException ex) {
+            try {
+                EntitySnapshot.loadNbt(target, before);
+            } catch (RuntimeException restore) {
+                invalid = true;
+                ready = false;
+                session.invalid = true;
+                See.LOGGER.error("Unable to restore entity {} after a rejected NBT edit", target.getUUID(), restore);
+            }
+            throw new IllegalStateException("游戏无法载入这些数据，实体已恢复原状：" + EntityEditBridge.rootMessage(ex));
+        }
+        CompoundTag actual = EntitySnapshot.saveNbt(target);
+        boolean layoutChanged = !EntityItems.discover(target, true).stream().map(EntityItems.Entry::description).toList().equals(descriptions);
+        // Publish the new data before the reply, so the editor never sees an older snapshot afterwards.
+        tickServer(player);
+        return new EntityEditBridge.NbtResult(actual, merge.changed(), layoutChanged);
+    }
+
     private boolean validate(ServerPlayer player) {
         if (invalid) return false;
         boolean accessible = !session.invalid && target != null && target.isAlive() && !target.isRemoved() && target.level() == player.level()

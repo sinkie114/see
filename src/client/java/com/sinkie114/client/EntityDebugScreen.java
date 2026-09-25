@@ -24,18 +24,20 @@ import java.util.*;
 public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebugMenu> {
     private static final Identifier BACKGROUND = Identifier.withDefaultNamespace("textures/gui/container/generic_54.png");
     private static final int CONTENT_X = 8, CONTENT_TOP = 18, CONTENT_BOTTOM = 68, CONTENT_RIGHT = 166;
-    private static final int PLAYER_TOP = 85, TAB_TOP = -22, TAB_HEIGHT = 22;
+    private static final int PLAYER_TOP = 85, TAB_TOP = -22, TAB_HEIGHT = 22, NBT_X = 143, NBT_WIDTH = 26;
     private final Entity target;
     private final EntityEditBridge.Session session;
     private final List<EntityItems.Entry> remoteEntries;
     private EntitySnapshot snapshot;
     private Page page = Page.ITEMS;
     private int scroll, horizontalScroll, maxScroll, maxHorizontalScroll;
-    private boolean tabInput, pageSynced;
+    private boolean tabInput, pageSynced, suspended;
     private final Set<String> expanded = new HashSet<>(Set.of("Entity"));
     private List<RawLine> rawLines = List.of();
     private List<String> lines = List.of();
     private final List<Button> tabs = new ArrayList<>();
+    private Button nbtButton;
+    private EntityNbtScreen nbtEditor;
 
     public EntityDebugScreen(Entity target, EntityDebugMenu menu, EntityEditBridge.Session session) {
         super(menu, menu.inventory, Component.literal("实体调试查看器"));
@@ -58,6 +60,7 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
 
     @Override protected void init() {
         super.init();
+        suspended = tabInput = false;
         menu.layout(CONTENT_X, CONTENT_TOP, PLAYER_TOP);
         menu.setItemsPage(page == Page.ITEMS);
         tabs.clear();
@@ -67,8 +70,40 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
                     .tooltip(Tooltip.create(Component.literal(candidate.title))).build();
             tabs.add(addRenderableWidget(button));
         }
+        nbtButton = addRenderableWidget(Button.builder(Component.literal("NBT"), b -> openNbtEditor(List.of()))
+                .bounds(leftPos + NBT_X, topPos + 3, NBT_WIDTH, 12)
+                .tooltip(Tooltip.create(Component.literal(session == null
+                        ? "多人模式：客户端没有完整实体 NBT，无法编辑"
+                        : "编辑实体 NBT：完整数据树，同步后写入实体"))).build());
+        nbtButton.active = canOpenNbt();
         updateTabs();
         rebuildLines();
+    }
+
+    private boolean canOpenNbt() {
+        return session != null && session.snapshot != null && session.snapshot.nbt() != null;
+    }
+
+    /** The vanilla container stays open underneath; the editor returns to this exact screen. */
+    private void openNbtEditor(List<Object> focus) {
+        if (!canOpenNbt()) return;
+        isQuickCrafting = false;
+        quickCraftSlots.clear();
+        clearDraggingState();
+        if (nbtEditor == null) nbtEditor = new EntityNbtScreen(this, target, session, focus);
+        else if (!focus.isEmpty()) nbtEditor.focus(focus);
+        suspended = true;
+        minecraft.setScreen(nbtEditor);
+    }
+
+    void resumeFromNbtEditor() {
+        if (minecraft.player != null && minecraft.player.containerMenu == menu) minecraft.setScreen(this);
+        else minecraft.setScreen(null);
+    }
+
+    @Override public void removed() {
+        // Suspending for the NBT editor is not closing the container.
+        if (!suspended) super.removed();
     }
 
     private void selectPage(Page selected) {
@@ -111,6 +146,7 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
             if (!menu.invalid && session.snapshot != null) snapshot = session.snapshot;
             if (menu.invalid) session.invalid = true;
             syncPage();
+            if (nbtButton != null) nbtButton.active = canOpenNbt();
         } else if (!menu.invalid) {
             refreshRemoteItems();
             snapshot = EntitySnapshot.capture(target, false, remoteEntries);
@@ -142,8 +178,9 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
         String title = snapshot.name().getString();
         String rows = page == Page.ITEMS && menu.otherPages() > 1
                 ? (menu.otherPage + 1) + "/" + menu.otherPages() : "";
-        g.drawString(font, font.plainSubstrByWidth(title, 160 - font.width(rows)), 8, 6, 0xFF404040, false);
-        if (!rows.isEmpty()) g.drawString(font, rows, 168 - font.width(rows), 6, 0xFF404040, false);
+        int titleRight = NBT_X - 3;
+        g.drawString(font, font.plainSubstrByWidth(title, titleRight - 8 - (rows.isEmpty() ? 0 : font.width(rows) + 4)), 8, 6, 0xFF404040, false);
+        if (!rows.isEmpty()) g.drawString(font, rows, titleRight - font.width(rows), 6, 0xFF404040, false);
         g.drawString(font, playerInventoryTitle, 8, inventoryLabelY, 0xFF404040, false);
         String mode = modeLabel();
         g.drawString(font, mode, 168 - font.width(mode), inventoryLabelY, menu.invalid ? 0xFFAA2222 : 0xFF404040, false);
@@ -190,11 +227,12 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
                 g.setTooltipForNextFrame(font, font.split(Component.literal(detail), Math.min(320, width - 24)), mouseX, mouseY);
             }
         }
-        if (isHovering(8, 4, 160, 12, mouseX, mouseY)) {
+        if (isHovering(8, 4, NBT_X - 11, 12, mouseX, mouseY)) {
             g.setComponentTooltipForNextFrame(font, List.of(snapshot.name(), Component.literal(snapshot.id()), Component.literal("UUID: " + snapshot.uuid())), mouseX, mouseY);
         } else if (isHovering(117, 72, 52, 10, mouseX, mouseY)) {
             String detail = menu.invalid ? "目标已失效，保留最后数据，编辑已禁用"
-                    : session == null ? "多人模式：实体和玩家物品栏均只读" : "集成服务器：修改立即生效；创造模式支持中键复制";
+                    : session == null ? "多人模式：实体和玩家物品栏均只读"
+                    : "集成服务器：修改立即生效；创造模式支持中键复制；标题栏 NBT 按钮可编辑实体数据";
             g.setTooltipForNextFrame(font, font.split(Component.literal(detail), 230), mouseX, mouseY);
         }
     }
@@ -226,17 +264,18 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
     }
 
     @Override public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
-        if (inTabs(event.x(), event.y())) {
+        if (inTabs(event.x(), event.y()) || nbtButton != null && nbtButton.isMouseOver(event.x(), event.y())) {
             tabInput = true;
             super.mouseClicked(event, doubleClick);
             return true;
         }
         if (page != Page.ITEMS && inContent(event.x(), event.y())) {
-            if (page == Page.RAW && event.button() == 0) {
-                int row = (int) ((event.y() - topPos - CONTENT_TOP + scroll) / 10);
-                if (row >= 0 && row < rawLines.size() && rawLines.get(row).branch()) {
-                    String path = rawLines.get(row).path();
-                    if (!expanded.remove(path)) expanded.add(path);
+            int row = (int) ((event.y() - topPos - CONTENT_TOP + scroll) / 10);
+            if (page == Page.RAW && row >= 0 && row < rawLines.size()) {
+                RawLine line = rawLines.get(row);
+                if (event.button() == 1 && canOpenNbt()) openNbtEditor(line.keys());
+                else if (event.button() == 0 && line.branch()) {
+                    if (!expanded.remove(line.path())) expanded.add(line.path());
                     rebuildLines();
                 }
             }
@@ -283,7 +322,7 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
         if (page == Page.ITEMS) { lines = List.of(); return; }
         if (page == Page.RAW) {
             List<RawLine> raw = new ArrayList<>();
-            flatten(raw, "Entity", "Entity", snapshot.raw(), 0);
+            flatten(raw, "Entity", "Entity", List.of(), snapshot.raw(), 0);
             rawLines = List.copyOf(raw);
             lines = rawLines.stream().map(RawLine::text).toList();
         } else {
@@ -296,19 +335,19 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
         horizontalScroll = Math.min(horizontalScroll, maxHorizontalScroll);
     }
 
-    private void flatten(List<RawLine> out, String name, String path, Tag tag, int depth) {
+    private void flatten(List<RawLine> out, String name, String path, List<Object> keys, Tag tag, int depth) {
         boolean branch = tag instanceof CompoundTag || tag instanceof CollectionTag;
         String value = tag instanceof CompoundTag compound ? compound.size() + " 个字段"
                 : tag instanceof CollectionTag list ? list.size() + " 项" : tag.toString();
         String type = tag.getClass().getSimpleName().replace("Tag", "");
         String prefix = branch ? expanded.contains(path) ? "▼ " : "▶ " : "  ";
-        out.add(new RawLine("  ".repeat(depth) + prefix + name + " [" + type + "] " + value,
-                path, branch, "路径: " + path + "\n类型: " + type + "\n值: " + value));
+        out.add(new RawLine("  ".repeat(depth) + prefix + name + " [" + type + "] " + value, path, keys, branch,
+                "路径: " + path + "\n类型: " + type + "\n值: " + value + (canOpenNbt() ? "\n右键：在 NBT 编辑器中打开" : "")));
         if (!branch || !expanded.contains(path)) return;
         if (tag instanceof CompoundTag compound) {
-            for (String key : compound.keySet().stream().sorted().toList()) flatten(out, key, path + "[\"" + key.replace("\\", "\\\\").replace("\"", "\\\"") + "\"]", compound.get(key), depth + 1);
+            for (String key : compound.keySet().stream().sorted().toList()) flatten(out, key, path + "[\"" + key.replace("\\", "\\\\").replace("\"", "\\\"") + "\"]", NbtTree.child(keys, key), compound.get(key), depth + 1);
         } else if (tag instanceof CollectionTag list) {
-            for (int i = 0; i < list.size(); i++) flatten(out, "[" + i + "]", path + "[" + i + "]", list.get(i), depth + 1);
+            for (int i = 0; i < list.size(); i++) flatten(out, "[" + i + "]", path + "[" + i + "]", NbtTree.child(keys, i), list.get(i), depth + 1);
         }
     }
 
@@ -331,5 +370,5 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
         final String title, shortTitle, key;
         Page(String title, String shortTitle, String key) { this.title = title; this.shortTitle = shortTitle; this.key = key; }
     }
-    private record RawLine(String text, String path, boolean branch, String detail) {}
+    private record RawLine(String text, String path, List<Object> keys, boolean branch, String detail) {}
 }
