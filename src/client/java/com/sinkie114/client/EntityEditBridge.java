@@ -4,11 +4,13 @@ import com.sinkie114.See;
 import com.sinkie114.client.mixin.ServerPlayerAccessor;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.client.Minecraft;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.BiConsumer;
 
 /** Only immutable display data crosses threads. Item actions use vanilla container packets. */
 public final class EntityEditBridge {
@@ -20,6 +22,9 @@ public final class EntityEditBridge {
         volatile boolean invalid;
         volatile boolean closed;
     }
+
+    /** The entity's data as saved right after a write, and the paths the write tried to change. */
+    public record NbtResult(CompoundTag actual, List<List<Object>> changed, boolean layoutChanged) {}
 
     public static void initialize() {
         ServerTickEvents.END_SERVER_TICK.register(server -> {
@@ -85,5 +90,39 @@ public final class EntityEditBridge {
                 client.execute(() -> opening = false);
             }
         });
+    }
+
+    /** Writes on the integrated server thread; done runs on the render thread with a result or a failure message. */
+    public static void writeNbt(Minecraft client, Session session, CompoundTag base, CompoundTag edited,
+                                BiConsumer<NbtResult, String> done) {
+        var server = client.getSingleplayerServer();
+        if (server == null || client.player == null) {
+            done.accept(null, "多人模式无法修改服务端实体数据");
+            return;
+        }
+        UUID playerId = client.player.getUUID();
+        CompoundTag requestedBase = base.copy(), requested = edited.copy();
+        server.execute(() -> {
+            NbtResult result = null;
+            String failure = null;
+            try {
+                ServerPlayer player = server.getPlayerList().getPlayer(playerId);
+                if (player == null || !(player.containerMenu instanceof EntityDebugMenu menu)) throw new IllegalStateException("SEE 容器已关闭");
+                result = menu.writeEntityNbt(player, session, requestedBase, requested);
+            } catch (RuntimeException ex) {
+                failure = rootMessage(ex);
+            }
+            NbtResult written = result;
+            String reason = failure;
+            client.execute(() -> done.accept(written, reason));
+        });
+    }
+
+    /** Entity.load wraps its real failure in a crash report; show the underlying reason. */
+    static String rootMessage(Throwable ex) {
+        Throwable cause = ex;
+        while (cause.getCause() != null && cause.getCause() != cause) cause = cause.getCause();
+        String message = cause.getMessage();
+        return message == null || message.isBlank() ? cause.getClass().getSimpleName() : message;
     }
 }

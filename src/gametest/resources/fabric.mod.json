@@ -5,6 +5,6 @@
   "name": "Entity inspector regression tests",
   "environment": "client",
   "entrypoints": {
-    "fabric-client-gametest": ["com.sinkie114.client.EntityInspectorTest"]
+    "fabric-client-gametest": ["com.sinkie114.client.EntityInspectorTest", "com.sinkie114.client.EntityNbtEditorTest"]
   }
 }

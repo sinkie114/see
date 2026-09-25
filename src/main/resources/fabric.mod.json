@@ -3,7 +3,7 @@
   "id": "see",
   "version": "${version}",
   "name": "实体调试查看器",
-  "description": "查看原版实体客户端数据，并在集成服务器中编辑实体物品。",
+  "description": "查看原版实体客户端数据，并在集成服务器中编辑实体物品和实体 NBT。",
   "authors": ["sinkie114"],
   "license": "CC0-1.0",
   "icon": "assets/see/icon.png",

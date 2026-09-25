@@ -8,12 +8,33 @@ import net.minecraft.util.ProblemReporter;
 import net.minecraft.world.entity.*;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.storage.TagValueInput;
 import net.minecraft.world.level.storage.TagValueOutput;
 import java.util.*;
 
-/** Immutable data transferred between the integrated server and the render thread. */
+/**
+ * Immutable data transferred between the integrated server and the render thread.
+ * nbt is the entity's own saved data (null for remote viewers); raw adds display-only keys.
+ */
 public record EntitySnapshot(Component name, String id, String uuid, Map<String, List<String>> pages,
-                             CompoundTag raw) {
+                             CompoundTag raw, CompoundTag nbt) {
+    /** Server thread only. The same data /data get entity shows. */
+    public static CompoundTag saveNbt(Entity e) {
+        TagValueOutput output = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, e.registryAccess());
+        e.saveWithoutId(output);
+        return output.buildResult();
+    }
+
+    /** Server thread only. Mirrors /data merge entity, which always keeps the original UUID. */
+    public static void loadNbt(Entity e, CompoundTag data) {
+        UUID uuid = e.getUUID();
+        try {
+            e.load(TagValueInput.create(ProblemReporter.DISCARDING, e.registryAccess(), data));
+        } finally {
+            e.setUUID(uuid);
+        }
+    }
+
     public static EntitySnapshot capture(Entity e, boolean server, List<EntityItems.Entry> slots) {
         Map<String, List<String>> pages = new LinkedHashMap<>();
         List<String> overview = new ArrayList<>();
@@ -71,10 +92,10 @@ public record EntitySnapshot(Component name, String id, String uuid, Map<String,
                 "垂直碰撞: " + e.verticalCollision, "下落距离: " + e.fallDistance));
 
         CompoundTag raw = new CompoundTag();
+        CompoundTag nbt = null;
         if (server) {
-            TagValueOutput output = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, e.registryAccess());
-            e.saveWithoutId(output);
-            raw = output.buildResult();
+            nbt = saveNbt(e);
+            raw = nbt.copy();
         } else {
             // Never serialize an incomplete remote entity as though it were authoritative NBT.
             raw.putString("id", BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString());
@@ -116,7 +137,7 @@ public record EntitySnapshot(Component name, String id, String uuid, Map<String,
         if (!server) synced.entrySet().forEach(entry -> other.add("同步字段 " + entry.getKey() + ": " + entry.getValue()));
         pages.put("other", List.copyOf(other));
         return new EntitySnapshot(e.getDisplayName().copy(), BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString(),
-                e.getUUID().toString(), Map.copyOf(pages), raw);
+                e.getUUID().toString(), Map.copyOf(pages), raw, nbt);
     }
     private static ListTag vector(double... values) {
         ListTag list = new ListTag();
