@@ -10,7 +10,8 @@
   "environment": "client",
   "entrypoints": {
     "main": ["com.sinkie114.See"],
-    "client": ["com.sinkie114.client.SeeClient"]
+    "client": ["com.sinkie114.client.SeeClient"],
+    "modmenu": ["com.sinkie114.client.compat.SeeModMenu"]
   },
   "mixins": [
     "see.mixins.json",
@@ -21,5 +22,8 @@
     "minecraft": "~1.21.11",
     "java": ">=21",
     "fabric-api": "*"
+  },
+  "suggests": {
+    "modmenu": "*"
   }
 }
