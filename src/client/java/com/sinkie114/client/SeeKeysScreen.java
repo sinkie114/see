@@ -46,7 +46,8 @@ public final class SeeKeysScreen extends Screen {
     private int top() { return height / 4; }
 
     private void bind(KeyMapping key, InputConstants.Key input) {
-        minecraft.options.setKey(key, input);
+        key.setKey(input);
+        minecraft.options.save();
         KeyMapping.resetMapping();
         listening = null;
         refreshLabels();
