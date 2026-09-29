@@ -88,7 +88,7 @@ public final class NbtValueScreen extends Screen implements EntityNbtLayer {
     @Override public void onClose() { minecraft.setScreen(parent); }
     @Override public boolean isPauseScreen() { return false; }
     @Override public void render(GuiGraphics g, int mx, int my, float delta) {
-        EntityNbtScreen.panel(g, x, y, w, h);
+        EntityEditorBase.panel(g, x, y, w, h);
         g.drawString(font, title, x + 8, y + 9, 0xFF303030, false);
         g.drawString(font, font.plainSubstrByWidth(message.isEmpty() ? "SNBT 字符串需引号；选择 String 类型可直接填写文字。Ctrl+Enter 载入。" : message, w - 16),
                 x + 8, y + h - 52, message.isEmpty() ? 0xFF555555 : 0xFFAA2222, false);

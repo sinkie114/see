@@ -15,10 +15,9 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 /** Complete entity NBT tree editor; the layout and write-back flow follow NBT Maker's item editor. */
-public final class EntityNbtScreen extends Screen implements EntityNbtLayer {
+public final class EntityNbtScreen extends EntityEditorBase {
     private static final int ROW = 14;
     private static final List<Object> ROOT = List.of();
-    private final EntityNbtSession session;
     private final Set<List<Object>> expanded = new HashSet<>(Set.of(ROOT));
     private final List<Row> rows = new ArrayList<>();
     private final List<Button> editingButtons = new ArrayList<>();
@@ -26,27 +25,25 @@ public final class EntityNbtScreen extends Screen implements EntityNbtLayer {
     private List<Object> selected = ROOT;
     private EditBox search;
     private String query = "";
-    private int x, y, w, h, treeTop, treeBottom, scroll, horizontal, seenRevision = -1;
-    private Button syncButton;
+    private int treeTop, treeBottom, scroll, horizontal;
     private boolean draggingBar;
 
-    public EntityNbtScreen(EntityNbtSession session) {
-        super(Component.literal("实体 NBT 编辑器")); this.session = session;
-    }
-    @Override public EntityNbtSession session() { return session; }
+    public EntityNbtScreen(EntityNbtSession session) { super(session, "实体 NBT 编辑器"); }
+    @Override protected EditorMode mode() { return EditorMode.ADVANCED; }
+    @Override protected void onRevision() { rebuildRows(); }
+    @Override protected String hint() { return page.hint; }
 
-    @Override protected void init() {
-        w = Math.min(760, width - 8); h = Math.min(490, height - 8); x = (width - w) / 2; y = (height - h) / 2;
-        editingButtons.clear(); syncButton = null;
+    @Override protected void initContent(int top) {
+        editingButtons.clear();
         int columns = w >= 400 ? Page.values().length : 4;
         for (Page candidate : Page.values()) {
             int i = candidate.ordinal(), bw = (w - 16) / columns;
-            var b = button(columns == Page.values().length ? candidate.shortTitle : candidate.title, x + 8 + i % columns * bw, y + 34 + i / columns * 21, bw - 2, () -> {
+            var b = button(columns == Page.values().length ? candidate.shortTitle : candidate.title, x + 8 + i % columns * bw, top + i / columns * 21, bw - 2, () -> {
                 page = candidate; selected = ROOT; scroll = horizontal = 0; rebuildWidgets();
             }); b.active = candidate != page;
             b.setTooltip(Tooltip.create(Component.literal(candidate.title + "：" + candidate.hint)));
         }
-        int searchY = y + (columns == Page.values().length ? 58 : 79);
+        int searchY = top + (columns == Page.values().length ? 24 : 45);
         search = addRenderableWidget(new EditBox(font, x + 8, searchY, w - 130, 18, Component.literal("搜索数据")));
         search.setMaxLength(2048); search.setHint(Component.literal("搜索节点名、类型或值")); search.setValue(query);
         search.setResponder(s -> { query = s; scroll = 0; rebuildRows(); });
@@ -62,13 +59,7 @@ public final class EntityNbtScreen extends Screen implements EntityNbtLayer {
             if (i < 4) { b.active = session.editable && !session.syncing; editingButtons.add(b); }
             if (i == 5) b.setTooltip(Tooltip.create(Component.literal("重新读取实体当前数据，保留你尚未同步的修改")));
         }
-        if (session.editable) syncButton = button("同步", x + w - 145, y + 8, 66, this::synchronize);
-        button("关闭", x + w - 75, y + 8, 67, this::onClose);
         rebuildRows();
-    }
-
-    private Button button(String text, int bx, int by, int bw, Runnable action) {
-        return addRenderableWidget(Button.builder(Component.literal(text), b -> action.run()).bounds(bx, by, bw, 20).build());
     }
 
     private void replace(List<Object> path, Tag value) { session.edit(NbtTools.replace(session.document, path, value)); rebuildRows(); }
@@ -81,7 +72,6 @@ public final class EntityNbtScreen extends Screen implements EntityNbtLayer {
             root.keySet().stream().sorted().filter(page::accepts).forEach(k -> append(NbtTools.child(ROOT, k), k, root.get(k), 1, true));
         }
         scroll = Math.max(0, Math.min(scroll, Math.max(0, rows.size() * ROW - (treeBottom - treeTop))));
-        seenRevision = session.revision;
     }
     private void append(List<Object> path, String name, Tag value, int depth, boolean recurse) {
         if (value == null || depth > 48 || rows.size() >= 10000) return;
@@ -201,7 +191,7 @@ public final class EntityNbtScreen extends Screen implements EntityNbtLayer {
                 if (i == 2 || i == 3) b.active = session.editable && !session.syncing;
             }
         }
-        @Override public void onClose() { session.close(); }
+        @Override public void onClose() { minecraft.setScreen(EntityNbtScreen.this); }
         @Override public boolean keyPressed(KeyEvent key) {
             if (minecraft.options.keyInventory.matches(key)) { onClose(); return true; }
             return super.keyPressed(key);
@@ -213,32 +203,12 @@ public final class EntityNbtScreen extends Screen implements EntityNbtLayer {
         }
     }
 
-    public void synchronize() {
-        if (!session.editable || session.syncing) return;
-        String risk = NbtTools.riskReason(session.patch);
-        if (!risk.isEmpty()) minecraft.setScreen(new RiskScreen(this, risk));
-        else session.sync(success -> rebuildRows());
-    }
-    private static final class RiskScreen extends ConfirmScreen implements EntityNbtLayer {
-        private final EntityNbtScreen parent;
-        RiskScreen(EntityNbtScreen parent, String reason) {
-            super(answer -> { parent.minecraft.setScreen(parent); if (answer) parent.session.sync(success -> parent.rebuildRows()); },
-                    Component.literal("高风险数据"), Component.literal(reason + "。当前数据可能导致游戏异常或崩溃，是否继续同步？"),
-                    Component.literal("确定同步"), Component.literal("取消"));
-            this.parent = parent;
-        }
-        @Override public EntityNbtSession session() { return parent.session; }
-        @Override public boolean isPauseScreen() { return false; }
-    }
-
     @Override public void tick() {
-        if (seenRevision != session.revision) rebuildRows();
+        super.tick();
         for (Button button : editingButtons) button.active = session.editable && !session.syncing;
-        if (syncButton != null) syncButton.active = !session.syncing && !session.patch.isEmpty();
     }
     @Override public boolean keyPressed(KeyEvent event) {
-        if (event.isEscape() || (minecraft.options.keyInventory.matches(event) && !search.isFocused())) { onClose(); return true; }
-        if (!search.isFocused()) {
+        if (!search.isFocused() && !typing()) {
             if (event.isCopy()) { copySelected(); return true; }
             if (event.isConfirmation()) { editSelected(); return true; }
             if (event.key() == 261 && session.editable) { deleteSelected(); return true; }
@@ -281,23 +251,7 @@ public final class EntityNbtScreen extends Screen implements EntityNbtLayer {
         }
         return super.mouseScrolled(mx, my, hx, vy);
     }
-    @Override public void onClose() { session.close(); }
-    @Override public boolean isPauseScreen() { return false; }
-
-    public static void panel(GuiGraphics g, int x, int y, int w, int h) {
-        g.fill(x, y, x + w, y + h, 0xFF373737);
-        g.fill(x + 1, y + 1, x + w - 2, y + h - 2, 0xFFFFFFFF);
-        g.fill(x + 3, y + 3, x + w - 3, y + h - 3, 0xFFC6C6C6);
-        g.fill(x + w - 3, y + 3, x + w - 1, y + h - 1, 0xFF555555);
-        g.fill(x + 3, y + h - 3, x + w - 1, y + h - 1, 0xFF555555);
-    }
-    @Override public void render(GuiGraphics g, int mx, int my, float delta) {
-        panel(g, x, y, w, h);
-        String name = session.target.getDisplayName().getString();
-        String mode = !session.editable ? (session.target instanceof net.minecraft.world.entity.player.Player ? "玩家数据 · 只读" : "多人 · 严格只读（仅客户端可见数据）")
-                : "本地 · 可编辑" + (session.patch.isEmpty() ? "" : " · " + session.patch.size() + " 处未同步修改");
-        g.drawString(font, font.plainSubstrByWidth(name, w - 185), x + 8, y + 6, 0xFF303030, false);
-        g.drawString(font, font.plainSubstrByWidth(mode, w - 185), x + 8, y + 20, 0xFF555555, false);
+    @Override protected void renderContent(GuiGraphics g, int mx, int my) {
         g.fill(x + 8, treeTop, x + w - 8, treeBottom, 0xFF8B8B8B);
         g.enableScissor(x + 8, treeTop, x + w - 12, treeBottom);
         for (int i = scroll / ROW; i < rows.size() && treeTop + i * ROW - scroll < treeBottom; i++) {
@@ -314,16 +268,6 @@ public final class EntityNbtScreen extends Screen implements EntityNbtLayer {
             g.fill(x + w - 12, treeTop, x + w - 8, treeBottom, 0xFF444444);
             g.fill(x + w - 12, by, x + w - 8, by + bar, 0xFFCCCCCC);
         }
-        String warning = !session.valid ? "目标实体已失效；仍可保留副本，同步会失败"
-                : !session.conflicts.isEmpty() ? "警告：你修改的字段已被游戏改变（" + String.join("、", session.conflicts.subList(0, Math.min(3, session.conflicts.size())))
-                        + (session.conflicts.size() > 3 ? "…" : "") + "），同步将覆盖"
-                : session.location;
-        String feedback = session.status.isEmpty() ? page.hint : session.status;
-        boolean alarm = !session.valid || !session.conflicts.isEmpty();
-        g.drawString(font, font.plainSubstrByWidth(warning, w - 16), x + 8, y + h - 33, alarm ? 0xFFAA2222 : 0xFF555555, false);
-        g.drawString(font, font.plainSubstrByWidth(feedback, w - 16), x + 8, y + h - 18, feedback.startsWith("同步失败") ? 0xFFAA2222 : 0xFF303030, false);
-        super.render(g, mx, my, delta);
-        if (my >= y + h - 36 && my < y + h - 6) g.setTooltipForNextFrame(font, font.split(Component.literal(my < y + h - 23 ? warning : feedback), Math.min(360, width - 24)), mx, my);
     }
 
     private record Row(List<Object> path, String name, Tag value, int depth, boolean branch) {}

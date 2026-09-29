@@ -2,21 +2,23 @@ package com.sinkie114.client;
 
 import com.sinkie114.See;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.Tag;
-import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.ProblemReporter;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.storage.TagValueInput;
 import net.minecraft.world.level.storage.TagValueOutput;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.function.Consumer;
@@ -24,13 +26,14 @@ import java.util.function.Consumer;
 /**
  * Entity NBT editing copy. No custom packets: every server access runs on the integrated server executor.
  * Sync applies only the fields the user changed on top of the live entity, then reads the entity back.
+ * The session outlives the individual editor screens and the inventory container screen.
  */
 public final class EntityNbtSession {
     private static final int POLL_INTERVAL = 4;
     public static EntityNbtSession active;
+    private static EditorMode lastMode = EditorMode.SIMPLE;
 
     public final Minecraft client;
-    public final EntityDebugScreen source;
     public final Entity target;
     public final boolean editable;
     public final String location;
@@ -40,61 +43,91 @@ public final class EntityNbtSession {
     private final UUID targetId;
     private boolean pollPending;
     private int ticks;
+    private EditorMode mode = lastMode;
+    private EntitySimpleScreen simple;
+    private EntityNbtScreen advanced;
+    private EntityInfoScreen info;
     public boolean syncing, valid = true;
     public CompoundTag document, baseline, observed;
     public NbtTools.Patch patch = NbtTools.Patch.EMPTY;
     /** Edited fields that the game changed after the copy was taken. */
     public List<String> conflicts = List.of();
+    /** Read-only overview text (overview, attributes, status, motion) from the latest poll. */
+    public Map<String, List<String>> pages = Map.of();
     public String status = "";
     public int revision;
 
+    private record Read(CompoundTag data, Map<String, List<String>> pages) {}
     private record Result(CompoundTag data, List<String> warnings) {}
 
-    private EntityNbtSession(Minecraft c, EntityDebugScreen source, Entity target, boolean editable, CompoundTag data) {
-        this.client = c; this.source = source; this.target = target; this.editable = editable;
+    private EntityNbtSession(Minecraft c, Entity target, boolean editable, Read read) {
+        this.client = c; this.target = target; this.editable = editable;
         this.level = c.level; this.server = c.getSingleplayerServer();
         this.dimension = target.level().dimension(); this.targetId = target.getUUID();
         location = "SEE / " + target.getName().getString() + " (" + targetId + ")"
                 + (target instanceof Player ? " · 玩家数据只读" : "");
-        document = data.copy(); baseline = data.copy(); observed = data.copy();
+        document = read.data().copy(); baseline = read.data().copy(); observed = read.data().copy();
+        pages = read.pages();
     }
 
-    /** Editable sessions start from the real server entity; read-only ones from SEE's client-visible snapshot. */
-    public static void open(Minecraft client, EntityDebugScreen source, Entity target, boolean canEdit) {
+    /**
+     * Opens the editor. Editable sessions start from the real server entity;
+     * read-only ones (remote servers, players) from what the client can see.
+     */
+    public static void open(Minecraft client, Entity target) {
+        if (client.player == null) return;
         var server = client.getSingleplayerServer();
-        boolean editable = canEdit && server != null && !(target instanceof Player);
-        if (!editable) {
-            present(client, source, target, false, source.rawSnapshot());
+        if (server == null) {
+            present(client, target, false, readClient(target));
             return;
         }
+        boolean editable = !(target instanceof Player);
         var dimension = target.level().dimension();
         UUID id = target.getUUID();
+        Screen before = client.screen;
         server.execute(() -> {
-            CompoundTag data = null; String failure = null;
-            try { data = save(resolve(server, dimension, id)); }
+            Read data = null; String failure = null;
+            try { data = readServer(resolve(server, dimension, id)); }
             catch (RuntimeException ex) { failure = message(ex); }
-            CompoundTag result = data; String reason = failure;
+            Read result = data; String reason = failure;
             client.execute(() -> {
-                if (client.screen != source) return;
-                if (result != null) present(client, source, target, true, result);
-                else if (client.player != null) client.player.displayClientMessage(Component.literal("无法打开实体数据：" + reason), true);
+                if (client.screen != before || client.player == null) return;
+                if (result != null) present(client, target, editable, result);
+                else client.player.displayClientMessage(net.minecraft.network.chat.Component.literal("无法打开实体数据：" + reason), true);
             });
         });
     }
 
-    private static void present(Minecraft client, EntityDebugScreen source, Entity target, boolean editable, CompoundTag data) {
-        var session = new EntityNbtSession(client, source, target, editable, data);
+    private static void present(Minecraft client, Entity target, boolean editable, Read read) {
+        var session = new EntityNbtSession(client, target, editable, read);
         active = session;
-        // Keep the SEE container open underneath; see EntityDebugScreen.removed().
-        source.suspended = true;
-        try { client.setScreen(new EntityNbtScreen(session)); }
-        finally { source.suspended = false; }
+        session.go(lastMode == EditorMode.INVENTORY ? EditorMode.SIMPLE : lastMode);
     }
 
     public static void tickActive(Minecraft client) {
         if (active == null) return;
         if (client.screen instanceof EntityNbtLayer layer && layer.session() == active) active.tick();
         else active = null;
+    }
+
+    public EditorMode mode() { return mode; }
+
+    /** Switches tab. The inventory tab opens the vanilla container screen instead of an editor screen. */
+    public void go(EditorMode next) {
+        if (next == EditorMode.INVENTORY) { EntityEditBridge.open(client, target, this); return; }
+        mode = next; lastMode = next;
+        client.setScreen(editorScreen(next));
+    }
+
+    /** Back from the inventory container to the tab the user came from. */
+    public void showEditor() { client.setScreen(editorScreen(mode)); }
+
+    private Screen editorScreen(EditorMode m) {
+        return switch (m) {
+            case ADVANCED -> advanced != null ? advanced : (advanced = new EntityNbtScreen(this));
+            case INFO -> info != null ? info : (info = new EntityInfoScreen(this));
+            default -> simple != null ? simple : (simple = new EntitySimpleScreen(this));
+        };
     }
 
     private static String message(RuntimeException ex) { return ex.getMessage() == null ? ex.toString() : ex.getMessage(); }
@@ -112,12 +145,28 @@ public final class EntityNbtSession {
         return output.buildResult();
     }
 
+    /** Server thread only. */
+    private static Read readServer(Entity entity) {
+        EntitySnapshot snapshot = EntitySnapshot.capture(entity, true, EntityItems.discover(entity, true));
+        CompoundTag data = snapshot.raw().copy();
+        // SEE's own display extras are not part of the entity.
+        data.remove("SyncedData"); data.remove("VisibleItems");
+        return new Read(data, snapshot.pages());
+    }
+
+    private static Read readClient(Entity entity) {
+        EntitySnapshot snapshot = EntitySnapshot.capture(entity, false, EntityItems.discover(entity, false));
+        return new Read(snapshot.raw().copy(), snapshot.pages());
+    }
+
     private static void load(Entity entity, CompoundTag data, ProblemReporter reporter) {
         UUID uuid = entity.getUUID();
         entity.load(TagValueInput.create(reporter, entity.registryAccess(), data));
         // The same rule as the vanilla /data command: an entity keeps its identity.
         entity.setUUID(uuid);
     }
+
+    public boolean writable() { return editable && !syncing; }
 
     public void edit(CompoundTag next) {
         if (!editable || syncing) return;
@@ -149,26 +198,32 @@ public final class EntityNbtSession {
     public void tick() {
         if (client.player == null || client.level != level) { valid = false; return; }
         if (++ticks % POLL_INTERVAL != 0) return;
-        if (!editable) {
-            valid = source.targetValid();
-            CompoundTag raw = source.rawSnapshot();
-            if (!raw.equals(observed)) {
-                observed = raw.copy(); document = raw.copy(); baseline = raw.copy(); revision++;
-            }
+        if (server == null || client.getSingleplayerServer() != server) {
+            valid = target.isAlive() && !target.isRemoved();
+            if (valid) accept(readClient(target));
             return;
         }
-        if (pollPending || syncing || client.getSingleplayerServer() != server) return;
+        if (pollPending || syncing) return;
         pollPending = true;
         server.execute(() -> {
-            CompoundTag data = null; String failure = null;
-            try { data = save(resolve(server, dimension, targetId)); }
+            Read data = null; String failure = null;
+            try { data = readServer(resolve(server, dimension, targetId)); }
             catch (RuntimeException ex) { failure = message(ex); }
-            CompoundTag result = data; String reason = failure;
+            Read result = data; String reason = failure;
             client.execute(() -> {
                 pollPending = false; valid = reason == null;
-                if (result != null && !syncing) { observed = result; updateConflicts(); }
+                if (result != null && !syncing) accept(result);
             });
         });
+    }
+
+    private void accept(Read read) {
+        pages = read.pages();
+        if (!read.data().equals(observed)) {
+            observed = read.data().copy();
+            if (editable) updateConflicts();
+            else { document = observed.copy(); baseline = observed.copy(); revision++; }
+        }
     }
 
     public void sync(Consumer<Boolean> done) {
@@ -204,7 +259,11 @@ public final class EntityNbtSession {
         CompoundTag merged = NbtTools.apply(before, requested);
         if (!Objects.equals(before.get("UUID"), merged.get("UUID"))) throw new IllegalStateException("UUID 不能修改");
         ProblemReporter.Collector problems = new ProblemReporter.Collector();
+        // Loading only adds effects, so drop the current ones first; the merged data lists every wanted effect.
+        boolean effects = requested.changes().stream().anyMatch(c -> c.path().getFirst().equals("active_effects"))
+                || requested.removed().stream().anyMatch(p -> p.getFirst().equals("active_effects"));
         try {
+            if (effects && entity instanceof LivingEntity living) living.removeAllEffects();
             load(entity, merged, problems);
         } catch (RuntimeException ex) {
             restore(entity, before);
@@ -231,10 +290,9 @@ public final class EntityNbtSession {
         catch (RuntimeException ex) { See.LOGGER.error("Unable to restore entity {} after a failed NBT edit", entity.getUUID(), ex); }
     }
 
+    /** Leaves the editor entirely; unsynced edits are discarded. */
     public void close() {
-        var menu = source.getMenu();
-        if (client.player != null && client.level == level && client.player.containerMenu == menu) client.setScreen(source);
-        else client.setScreen(null);
         active = null;
+        client.setScreen(null);
     }
 }

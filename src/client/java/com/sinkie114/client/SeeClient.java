@@ -44,7 +44,7 @@ public class SeeClient implements ClientModInitializer {
         while (OPEN_DEBUG.consumeClick()) {
             Entity target = pickFromCamera(client);
             if (target != null && target != client.player) {
-                EntityEditBridge.open(client, target);
+                EntityNbtSession.open(client, target);
                 break;
             }
         }

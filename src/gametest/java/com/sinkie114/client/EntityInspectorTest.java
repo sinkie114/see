@@ -550,14 +550,16 @@ public final class EntityInspectorTest implements FabricClientGameTest {
         context.waitTicks(3);
     }
 
+    /**
+     * The inventory screen only has the items page now (the other tabs moved into the NBT editor),
+     * but the menu still hides its entity slots when the page is off; drive that state directly.
+     */
     private static void selectTab(ClientGameTestContext context, String label) {
         context.runOnClient(c -> {
-            var screen = (EntityDebugScreen)c.screen;
-            var button = screen.children().stream().filter(child -> child instanceof Button b && b.getMessage().getString().equals(label))
-                    .map(child -> (Button)child).findFirst().orElseThrow();
-            var event = new MouseButtonEvent(button.getX() + button.getWidth() / 2.0, button.getY() + button.getHeight() / 2.0, new MouseButtonInfo(0, 0));
-            screen.mouseClicked(event, false);
-            screen.mouseReleased(event);
+            var menu = ((EntityDebugScreen)c.screen).getMenu();
+            boolean items = label.equals("物品");
+            menu.setItemsPage(items);
+            if (c.player.containerMenu == menu && menu.ready) c.gameMode.handleInventoryButtonClick(menu.containerId, items ? 0 : 1);
         });
         context.waitTicks(2);
     }
