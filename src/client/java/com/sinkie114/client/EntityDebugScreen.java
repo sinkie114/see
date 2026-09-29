@@ -32,6 +32,8 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
     private Page page = Page.ITEMS;
     private int scroll, horizontalScroll, maxScroll, maxHorizontalScroll;
     private boolean tabInput, pageSynced;
+    /** Set while the entity NBT editor is on top, so the container is not closed underneath it. */
+    boolean suspended;
     private final Set<String> expanded = new HashSet<>(Set.of("Entity"));
     private List<RawLine> rawLines = List.of();
     private List<String> lines = List.of();
@@ -68,7 +70,31 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
             tabs.add(addRenderableWidget(button));
         }
         updateTabs();
+        addNbtButton();
         rebuildLines();
+    }
+
+    private void addNbtButton() {
+        boolean editable = session != null && !menu.invalid;
+        int bx = leftPos + imageWidth + 4, by = topPos + TAB_TOP;
+        // Beside the tab strip, or under the container when the window is too narrow.
+        if (bx + 62 > width) { bx = leftPos + imageWidth - 62; by = topPos + imageHeight + 4; }
+        addRenderableWidget(Button.builder(Component.literal(editable ? "编辑 NBT" : "查看 NBT"),
+                b -> EntityNbtSession.open(minecraft, this, target, editable))
+                .bounds(bx, by, 62, TAB_HEIGHT)
+                .tooltip(Tooltip.create(Component.literal(editable ? "打开完整实体 NBT 编辑器" : "只读查看客户端可见的实体 NBT"))).build());
+    }
+
+    /** The screen does not tick while the NBT editor covers it, so refresh the data here. */
+    CompoundTag rawSnapshot() {
+        if (session != null && session.snapshot != null) snapshot = session.snapshot;
+        else if (session == null && !menu.invalid) snapshot = EntitySnapshot.capture(target, false, remoteEntries);
+        return snapshot.raw();
+    }
+    boolean targetValid() { return !menu.invalid && target.isAlive() && !target.isRemoved(); }
+
+    @Override public void removed() {
+        if (!suspended) super.removed();
     }
 
     private void selectPage(Page selected) {

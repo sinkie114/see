@@ -33,6 +33,7 @@ public class SeeClient implements ClientModInitializer {
                 GLFW.GLFW_KEY_F8,
                 category));
         ClientTickEvents.END_CLIENT_TICK.register(SeeClient::tick);
+        ClientTickEvents.END_CLIENT_TICK.register(EntityNbtSession::tickActive);
     }
 
     private static void tick(Minecraft client) {
