@@ -33,6 +33,7 @@ public class SeeClient implements ClientModInitializer {
                 GLFW.GLFW_KEY_F8,
                 category));
         ClientTickEvents.END_CLIENT_TICK.register(SeeClient::tick);
+        ClientTickEvents.END_CLIENT_TICK.register(EntityNbtSession::tickActive);
     }
 
     private static void tick(Minecraft client) {
@@ -43,7 +44,7 @@ public class SeeClient implements ClientModInitializer {
         while (OPEN_DEBUG.consumeClick()) {
             Entity target = pickFromCamera(client);
             if (target != null && target != client.player) {
-                EntityEditBridge.open(client, target);
+                EntityNbtSession.open(client, target);
                 break;
             }
         }

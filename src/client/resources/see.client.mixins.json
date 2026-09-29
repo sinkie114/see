@@ -10,7 +10,8 @@
     "EntityDataAccessor",
     "VillagerHandProtectionMixin",
     "VillagerTradeDisplayMixin",
-    "VillagerBonemealDisplayMixin"
+    "VillagerBonemealDisplayMixin",
+    "LocalPlayerCloseMixin"
   ],
   "injectors": {
     "defaultRequire": 1

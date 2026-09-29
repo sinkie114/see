@@ -29,14 +29,18 @@ public final class EntityEditBridge {
         });
     }
 
-    public static void open(Minecraft client, Entity target) {
+    public static void open(Minecraft client, Entity target) { open(client, target, null); }
+
+    /** Opens the inventory container; {@code nbt} is the editor session it is a tab of (null when used standalone). */
+    public static void open(Minecraft client, Entity target, EntityNbtSession nbt) {
         if (opening || client.player == null) return;
         var server = client.getSingleplayerServer();
         if (server == null) {
-            client.setScreen(EntityDebugScreen.readOnly(target, client.player.getInventory()));
+            client.setScreen(EntityDebugScreen.readOnly(target, client.player.getInventory(), nbt));
             return;
         }
         opening = true;
+        var from = client.screen;
         var connection = client.getConnection();
         var clientLevel = client.level;
         UUID playerId = client.player.getUUID();
@@ -62,11 +66,11 @@ public final class EntityEditBridge {
                 client.execute(() -> {
                     opening = false;
                     if (client.getConnection() != connection || client.level != clientLevel || client.player == null
-                            || client.screen != null || target.isRemoved()) return;
+                            || client.screen != from || target.isRemoved()) return;
                     EntityDebugMenu clientMenu = EntityDebugMenu.client(id, descriptions, client.player.getInventory(), true);
                     clientMenu.setClientTarget(target);
                     client.player.containerMenu = clientMenu;
-                    client.setScreen(new EntityDebugScreen(target, clientMenu, session));
+                    client.setScreen(new EntityDebugScreen(target, clientMenu, session, nbt));
                     // Install the client menu BEFORE sending the initial vanilla slot packets.
                     server.execute(() -> {
                         if (session.closed || player.hasDisconnected() || player.containerMenu != player.inventoryMenu) {
