@@ -19,14 +19,24 @@ jobs:
         with:
           java-version: '21'
           distribution: 'microsoft'
-      - name: install virtual display
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q xvfb libgl1-mesa-dri
+      # Loom already wraps the game in xvfb-run on CI. Software rendering gets
+      # two threads so world generation keeps CPU time.
       - name: run client game tests
+        shell: bash
+        env:
+          LP_NUM_THREADS: '2'
         run: |
           chmod +x ./gradlew
-          xvfb-run -a -s "-screen 0 1920x1080x24" ./gradlew runClientGameTest --stacktrace
+          echo "CPU cores: $(nproc)"
+          # Occasionally the integrated server stalls while preparing the spawn
+          # area on hosted runners, even for unchanged code. Only that exact
+          # failure is retried; every other failure fails the job at once.
+          for attempt in 1 2 3; do
+            if ./gradlew runClientGameTest --stacktrace 2>&1 | tee gametest.log; then exit 0; fi
+            grep -q "Timeout loading world" gametest.log || exit 1
+            echo "::warning::World loading timed out on attempt $attempt; retrying"
+          done
+          exit 1
       - name: upload screenshots and logs
         if: always()
         uses: actions/upload-artifact@v7
