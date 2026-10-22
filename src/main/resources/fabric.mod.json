@@ -9,9 +9,9 @@
   "icon": "assets/see/icon.png",
   "environment": "client",
   "entrypoints": {
-    "main": ["com.sinkie114.See"],
-    "client": ["com.sinkie114.client.SeeClient"],
-    "modmenu": ["com.sinkie114.client.compat.SeeModMenu"]
+    "main": ["com.sinkie114.see.See"],
+    "client": ["com.sinkie114.see.SeeClient"],
+    "modmenu": ["com.sinkie114.see.compat.SeeModMenu"]
   },
   "mixins": [
     "see.mixins.json",
