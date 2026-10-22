@@ -33,6 +33,7 @@ import net.minecraft.world.item.trading.MerchantOffer;
 import net.minecraft.world.item.trading.MerchantOffers;
 import net.minecraft.world.level.GameType;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.phys.Vec3;
 import java.util.UUID;
 
 /** Runs in a separate disposable world and uses the actual client/server packet path. */
@@ -90,6 +91,7 @@ public final class EntityInspectorTest implements FabricClientGameTest {
                 p.level().setBlockAndUpdate(p.blockPosition().east().above(), net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
             });
             context.waitTicks(2);
+            testPickRange(context, server, villagerId, entityId);
             context.runOnClient(c -> EntityEditBridge.open(c, c.level.getEntity(entityId)));
             context.waitFor(c -> c.screen instanceof EntityDebugScreen screen && screen.getMenu().ready);
             context.runOnClient(c -> {
@@ -217,6 +219,7 @@ public final class EntityInspectorTest implements FabricClientGameTest {
             context.waitFor(c -> !c.player.hasInfiniteMaterials());
             testOtherInventories(context, server);
             testShiftVisualOrder(context, server);
+            testStatusPage(server, villagerId);
             // Protection must also work while the inspector is closed.
             testVillagerAi(context, server, villagerId);
         }
@@ -265,6 +268,43 @@ public final class EntityInspectorTest implements FabricClientGameTest {
             context.waitTicks(3);
             server.runOnServer(s -> check(s.getPlayerList().getPlayers().getFirst().getInventory().countItem(Items.DIAMOND_SWORD) == 1, "Invalid target close must still return the carried sword exactly once"));
         }
+    }
+
+    /** The inspector reaches well past the 3-block survival interaction range. */
+    private static void testPickRange(ClientGameTestContext context, TestServerContext server, UUID villagerId, int entityId) {
+        Vec3 home = server.computeOnServer(s -> s.overworld().getEntity(villagerId).position());
+        server.runOnServer(s -> {
+            var player = s.getPlayerList().getPlayers().getFirst();
+            s.overworld().getEntity(villagerId).setPos(player.getX() - 12, player.getY(), player.getZ());
+        });
+        context.runOnClient(c -> { c.player.setYRot(90); c.player.setXRot(0); });
+        context.waitFor(c -> c.level.getEntity(entityId).getX() < c.player.getX() - 11.5);
+        context.waitTicks(3);
+        context.runOnClient(c -> check(SeeClient.pickFromCamera(c) == c.level.getEntity(entityId), "An entity 12 blocks away must be selectable"));
+        server.runOnServer(s -> s.overworld().getEntity(villagerId).setPos(home));
+        context.runOnClient(c -> { c.player.setYRot(-90); c.player.setXRot(0); });
+        context.waitFor(c -> c.level.getEntity(entityId).position().distanceTo(home) < 0.01);
+        context.waitTicks(3);
+    }
+
+    /** Villager profession and trades on the status page come from the server's saved data. */
+    private static void testStatusPage(TestServerContext server, UUID villagerId) {
+        server.runOnServer(s -> {
+            var villager = (Villager) s.overworld().getEntity(villagerId);
+            MerchantOffers oldOffers = villager.getOffers();
+            try {
+                MerchantOffers offers = new MerchantOffers();
+                offers.add(new MerchantOffer(new ItemCost(Items.EMERALD, 3), new ItemStack(Items.BREAD, 2), 10, 1, 0F));
+                villager.setOffers(offers);
+                var lines = EntitySnapshot.capture(villager, true, EntityItems.discover(villager, true)).pages().get("status");
+                check(lines.stream().anyMatch(line -> line.startsWith("职业: ") && line.contains("等级")), "Status page names the profession: " + lines);
+                check(lines.stream().anyMatch(line -> line.startsWith("交易 1 项")), "Status page counts trades: " + lines);
+                check(lines.stream().anyMatch(line -> line.contains("3×") && line.contains("→ 2×") && line.contains("已用 0/10")),
+                        "Status page lists the trade: " + lines);
+            } finally {
+                villager.setOffers(oldOffers);
+            }
+        });
     }
 
     private static void testChestTabsAndCloning(ClientGameTestContext context, TestServerContext server, UUID villagerId) {

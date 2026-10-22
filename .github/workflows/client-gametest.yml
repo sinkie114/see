@@ -1,0 +1,52 @@
+# Runs the client game tests in src/gametest inside a real (virtual-display)
+# Minecraft client, so every push and pull request is checked in game, not
+# only compiled.
+
+name: client gametest
+on: [pull_request, push]
+
+jobs:
+  client-gametest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@v6
+      - name: validate gradle wrapper
+        uses: gradle/actions/wrapper-validation@v6
+      - name: setup jdk
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'microsoft'
+      # Loom already wraps the game in xvfb-run on CI. Software rendering gets
+      # two threads so world generation keeps CPU time. Fabric's docs note the
+      # client gametest network synchronizer can fail on GitHub Actions and
+      # recommend disabling it there; local runs keep it.
+      - name: run client game tests
+        shell: bash
+        env:
+          LP_NUM_THREADS: '2'
+          JAVA_TOOL_OPTIONS: -Dfabric.client.gametest.disableNetworkSynchronizer=true
+        run: |
+          chmod +x ./gradlew
+          echo "CPU cores: $(nproc)"
+          # Occasionally the integrated server stalls while preparing the spawn
+          # area on hosted runners, even for unchanged code. Only that exact
+          # failure is retried; every other failure fails the job at once.
+          for attempt in 1 2 3; do
+            if ./gradlew runClientGameTest --stacktrace 2>&1 | tee gametest.log; then exit 0; fi
+            grep -q "Timeout loading world" gametest.log || exit 1
+            echo "::warning::World loading timed out on attempt $attempt; retrying"
+          done
+          exit 1
+      - name: upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: client-gametest
+          path: |
+            build/run/clientGameTest/screenshots/
+            build/run/clientGameTest/logs/
+            build/run/clientGameTest/crash-reports/
+          if-no-files-found: ignore

@@ -8,6 +8,7 @@ import net.minecraft.client.Camera;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.AABB;
@@ -22,6 +23,8 @@ import java.util.Optional;
 /** Client entrypoint for the entity debug viewer. */
 public class SeeClient implements ClientModInitializer {
     public static KeyMapping OPEN_DEBUG;
+    /** Inspection reach in blocks; the survival interaction range (3) meant walking right up to every mob. Blocks still stop the ray. */
+    public static final double PICK_RANGE = 32.0D;
 
     @Override
     public void onInitializeClient() {
@@ -41,20 +44,37 @@ public class SeeClient implements ClientModInitializer {
             return;
         }
         while (OPEN_DEBUG.consumeClick()) {
-            Entity target = pickFromCamera(client);
-            if (target != null && target != client.player) {
-                EntityEditBridge.open(client, target);
+            Entity hit = nearestFromCamera(client);
+            if (hit != null && hit != client.player && isVanilla(hit)) {
+                EntityEditBridge.open(client, hit);
                 break;
             }
+            // Say why nothing opened instead of ignoring the key.
+            client.player.displayClientMessage(Component.literal(hit != null && hit != client.player
+                    ? "SEE 只支持原版实体：" + BuiltInRegistries.ENTITY_TYPE.getKey(hit.getType())
+                    : "准星没有对准 " + (int) PICK_RANGE + " 格内的实体"), true);
         }
     }
 
     /** Picks using the active render camera, including detached/free camera. */
     public static Entity pickFromCamera(Minecraft client) {
+        Entity entity = nearestFromCamera(client);
+        // The player's own body is a hard stop.  This is deliberately checked
+        // after sorting, so a closer entity in front of the player can still be
+        // selected in third-person view.
+        return entity == client.player || entity != null && !isVanilla(entity) ? null : entity;
+    }
+
+    private static boolean isVanilla(Entity entity) {
+        return BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).getNamespace().equals("minecraft");
+    }
+
+    /** The first entity the camera ray reaches before any block, or null. */
+    private static Entity nearestFromCamera(Minecraft client) {
         Camera camera = client.gameRenderer.getMainCamera();
         Vec3 start = camera.position();
         Vec3 direction = new Vec3(camera.forwardVector());
-        double reach = client.player.entityInteractionRange();
+        double reach = Math.max(client.player.entityInteractionRange(), PICK_RANGE);
         Vec3 end = start.add(direction.scale(reach));
 
         HitResult blockHit = client.level.clip(new net.minecraft.world.level.ClipContext(
@@ -72,12 +92,7 @@ public class SeeClient implements ClientModInitializer {
                 .filter(java.util.Objects::nonNull)
                 .min(Comparator.comparingDouble(Hit::distance));
         if (nearest.isEmpty() || nearest.get().distance() > blockDistance) return null;
-        // The player's own body is a hard stop.  This is deliberately checked
-        // after sorting, so a closer entity in front of the player can still be
-        // selected in third-person view.
-        Entity entity = nearest.get().entity();
-        return entity == client.player || !BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).getNamespace().equals("minecraft")
-                ? null : entity;
+        return nearest.get().entity();
     }
 
     private static Hit hit(Entity entity, Vec3 start, Vec3 end, double blockDistance) {
