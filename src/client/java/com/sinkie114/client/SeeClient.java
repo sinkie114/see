@@ -36,6 +36,7 @@ public class SeeClient implements ClientModInitializer {
                 GLFW.GLFW_KEY_F8,
                 category));
         ClientTickEvents.END_CLIENT_TICK.register(SeeClient::tick);
+        ClientTickEvents.END_CLIENT_TICK.register(EntityNbtSession::tickActive);
     }
 
     private static void tick(Minecraft client) {
@@ -46,7 +47,7 @@ public class SeeClient implements ClientModInitializer {
         while (OPEN_DEBUG.consumeClick()) {
             Entity hit = nearestFromCamera(client);
             if (hit != null && hit != client.player && isVanilla(hit)) {
-                EntityEditBridge.open(client, hit);
+                EntityNbtSession.open(client, hit);
                 break;
             }
             // Say why nothing opened instead of ignoring the key.
