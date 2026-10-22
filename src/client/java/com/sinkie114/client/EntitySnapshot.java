@@ -15,7 +15,7 @@ import java.util.*;
 
 /** Immutable data transferred between the integrated server and the render thread. */
 public record EntitySnapshot(Component name, String id, String uuid, Map<String, List<String>> pages,
-                             CompoundTag raw) {
+                             CompoundTag raw, Map<EntityAction, Boolean> actions) {
     public static EntitySnapshot capture(Entity e, boolean server, List<EntityItems.Entry> slots) {
         Map<String, List<String>> pages = new LinkedHashMap<>();
         List<String> overview = new ArrayList<>();
@@ -130,8 +130,11 @@ public record EntitySnapshot(Component name, String id, String uuid, Map<String,
         }
         if (!server) synced.entrySet().forEach(entry -> other.add("同步字段 " + entry.getKey() + ": " + entry.getValue()));
         pages.put("other", List.copyOf(other));
+        // Supported quick actions with their current toggle state, for the actions tab.
+        Map<EntityAction, Boolean> actions = new EnumMap<>(EntityAction.class);
+        for (EntityAction action : EntityAction.values()) if (action.supports(e, server)) actions.put(action, action.state(e));
         return new EntitySnapshot(e.getDisplayName().copy(), BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString(),
-                e.getUUID().toString(), Map.copyOf(pages), raw);
+                e.getUUID().toString(), Map.copyOf(pages), raw, Collections.unmodifiableMap(actions));
     }
     /** Coordinates to three decimals; the raw page keeps the exact values. */
     private static String vec(Vec3 v) {

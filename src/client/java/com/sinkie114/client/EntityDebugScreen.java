@@ -24,7 +24,7 @@ import java.util.*;
 public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebugMenu> {
     private static final Identifier BACKGROUND = Identifier.withDefaultNamespace("textures/gui/container/generic_54.png");
     private static final int CONTENT_X = 8, CONTENT_TOP = 18, CONTENT_BOTTOM = 68, CONTENT_RIGHT = 166;
-    private static final int PLAYER_TOP = 85, TAB_TOP = -22, TAB_HEIGHT = 22;
+    private static final int PLAYER_TOP = 85, TAB_TOP = -22, TAB_HEIGHT = 22, TAB_STEP = 25;
     private final Entity target;
     private final EntityEditBridge.Session session;
     private final List<EntityItems.Entry> remoteEntries;
@@ -36,6 +36,8 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
     private List<RawLine> rawLines = List.of();
     private List<String> lines = List.of();
     private final List<Button> tabs = new ArrayList<>();
+    private final Map<EntityAction, Button> actionButtons = new EnumMap<>(EntityAction.class);
+    private Button copyButton;
 
     public EntityDebugScreen(Entity target, EntityDebugMenu menu, EntityEditBridge.Session session) {
         super(menu, menu.inventory, Component.literal("实体调试查看器"));
@@ -63,10 +65,11 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
         tabs.clear();
         for (Page candidate : Page.values()) {
             Button button = Button.builder(Component.literal(candidate.shortTitle), b -> selectPage(candidate))
-                    .bounds(leftPos + 1 + candidate.ordinal() * 25, topPos + TAB_TOP, 24, TAB_HEIGHT)
+                    .bounds(tabLeft() + candidate.ordinal() * TAB_STEP, topPos + TAB_TOP, TAB_STEP - 1, TAB_HEIGHT)
                     .tooltip(Tooltip.create(Component.literal(candidate.title))).build();
             tabs.add(addRenderableWidget(button));
         }
+        addActionButtons();
         updateTabs();
         rebuildLines();
     }
@@ -95,6 +98,56 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
 
     private void updateTabs() {
         for (int i = 0; i < tabs.size(); i++) tabs.get(i).active = i != page.ordinal();
+        updateActionButtons();
+    }
+
+    /** The tab strip is centred over the panel and may be slightly wider than it. */
+    private int tabLeft() {
+        return leftPos + (imageWidth - (Page.values().length * TAB_STEP - 1)) / 2;
+    }
+
+    /** A 3 × 3 grid inside the content area; only actions this entity supports are shown. */
+    private void addActionButtons() {
+        actionButtons.clear();
+        int index = 0;
+        for (EntityAction action : EntityAction.values()) {
+            if (!snapshot.actions().containsKey(action)) continue;
+            Button button = Button.builder(Component.literal(action.label), b -> runAction(action))
+                    .bounds(actionX(index), actionY(index), 52, 16)
+                    .tooltip(Tooltip.create(Component.literal(action.help + (session == null ? "\n多人模式：只读，无法修改实体" : "")))).build();
+            actionButtons.put(action, addRenderableWidget(button));
+            index++;
+        }
+        copyButton = addRenderableWidget(Button.builder(Component.literal("复制NBT"), b -> copyRaw())
+                .bounds(actionX(index), actionY(index), 52, 16)
+                .tooltip(Tooltip.create(Component.literal(session == null ? "复制客户端可见的实体数据（SNBT）" : "复制完整实体 NBT（SNBT）"))).build());
+    }
+    private int actionX(int index) { return leftPos + CONTENT_X + index % 3 * 54; }
+    private int actionY(int index) { return topPos + CONTENT_TOP + index / 3 * 18; }
+
+    private void updateActionButtons() {
+        boolean shown = page == Page.ACTIONS;
+        actionButtons.forEach((action, button) -> {
+            button.visible = shown;
+            button.active = session != null && menu.ready && menu.canEdit();
+            Boolean state = snapshot.actions().get(action);
+            button.setMessage(Component.literal(action.toggle ? action.label + ":" + (Boolean.TRUE.equals(state) ? "开" : "关") : action.label));
+        });
+        if (copyButton != null) copyButton.visible = shown;
+    }
+
+    private void runAction(EntityAction action) {
+        if (session == null || !menu.ready || !menu.canEdit() || minecraft.player.containerMenu != menu) return;
+        minecraft.gameMode.handleInventoryButtonClick(menu.containerId, action.button);
+    }
+
+    private void copyRaw() {
+        copy(snapshot.raw(), "实体 NBT");
+    }
+
+    private void copy(Tag tag, String what) {
+        minecraft.keyboardHandler.setClipboard(tag.toString());
+        if (minecraft.player != null) minecraft.player.displayClientMessage(Component.literal("已复制" + what + "（SNBT）"), true);
     }
 
     private void refreshRemoteItems() {
@@ -115,6 +168,9 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
             refreshRemoteItems();
             snapshot = EntitySnapshot.capture(target, false, remoteEntries);
         }
+        // The first snapshot may be client-side; rebuild once the server reports a different action set.
+        if (!actionButtons.keySet().equals(snapshot.actions().keySet())) rebuildWidgets();
+        else updateActionButtons();
         rebuildLines();
     }
 
@@ -164,6 +220,7 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
             }
             return;
         }
+        if (page == Page.ACTIONS) return;
         g.enableScissor(CONTENT_X, CONTENT_TOP, CONTENT_RIGHT, CONTENT_BOTTOM);
         int first = scroll / 10;
         int last = Math.min(lines.size(), (scroll + CONTENT_BOTTOM - CONTENT_TOP) / 10 + 1);
@@ -183,7 +240,7 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
         if (hoveredSlot != null && hoveredSlot.index < menu.descriptions.size() && !hoveredSlot.hasItem()) {
             g.setTooltipForNextFrame(Component.literal(menu.descriptions.get(hoveredSlot.index).label()), mouseX, mouseY);
         }
-        if (page != Page.ITEMS && inContent(mouseX, mouseY)) {
+        if (page != Page.ITEMS && page != Page.ACTIONS && inContent(mouseX, mouseY)) {
             int row = (mouseY - topPos - CONTENT_TOP + scroll) / 10;
             if (row >= 0 && row < lines.size() && (page == Page.RAW || font.width(lines.get(row)) > CONTENT_RIGHT - CONTENT_X)) {
                 String detail = page == Page.RAW ? rawLines.get(row).detail() : lines.get(row);
@@ -222,22 +279,26 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
         return x >= leftPos + CONTENT_X && x < leftPos + 169 && y >= topPos + 17 && y < topPos + 71;
     }
     private boolean inTabs(double x, double y) {
-        return x >= leftPos && x < leftPos + imageWidth && y >= topPos + TAB_TOP && y < topPos;
+        return x >= tabLeft() && x < tabLeft() + Page.values().length * TAB_STEP && y >= topPos + TAB_TOP && y < topPos;
     }
 
     @Override public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
-        if (inTabs(event.x(), event.y())) {
+        // Action buttons live inside the content area; route them like tabs so slots never see the click.
+        if (inTabs(event.x(), event.y()) || page == Page.ACTIONS && inContent(event.x(), event.y())) {
             tabInput = true;
             super.mouseClicked(event, doubleClick);
             return true;
         }
         if (page != Page.ITEMS && inContent(event.x(), event.y())) {
-            if (page == Page.RAW && event.button() == 0) {
+            if (page == Page.RAW) {
                 int row = (int) ((event.y() - topPos - CONTENT_TOP + scroll) / 10);
-                if (row >= 0 && row < rawLines.size() && rawLines.get(row).branch()) {
-                    String path = rawLines.get(row).path();
-                    if (!expanded.remove(path)) expanded.add(path);
-                    rebuildLines();
+                if (row >= 0 && row < rawLines.size()) {
+                    RawLine line = rawLines.get(row);
+                    if (event.button() == 1) copy(line.tag(), " " + line.path() + " ");
+                    else if (event.button() == 0 && line.branch()) {
+                        if (!expanded.remove(line.path())) expanded.add(line.path());
+                        rebuildLines();
+                    }
                 }
             }
             return true;
@@ -280,7 +341,7 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
     }
 
     private void rebuildLines() {
-        if (page == Page.ITEMS) { lines = List.of(); return; }
+        if (page == Page.ITEMS || page == Page.ACTIONS) { lines = List.of(); maxScroll = maxHorizontalScroll = scroll = horizontalScroll = 0; return; }
         if (page == Page.RAW) {
             List<RawLine> raw = new ArrayList<>();
             flatten(raw, "Entity", "Entity", snapshot.raw(), 0);
@@ -303,7 +364,7 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
         String type = tag.getClass().getSimpleName().replace("Tag", "");
         String prefix = branch ? expanded.contains(path) ? "▼ " : "▶ " : "  ";
         out.add(new RawLine("  ".repeat(depth) + prefix + name + " [" + type + "] " + value,
-                path, branch, "路径: " + path + "\n类型: " + type + "\n值: " + value));
+                path, branch, "路径: " + path + "\n类型: " + type + "\n值: " + value + "\n右键复制此节点（SNBT）", tag));
         if (!branch || !expanded.contains(path)) return;
         if (tag instanceof CompoundTag compound) {
             for (String key : compound.keySet().stream().sorted().toList()) flatten(out, key, path + "[\"" + key.replace("\\", "\\\\").replace("\"", "\\\"") + "\"]", compound.get(key), depth + 1);
@@ -327,9 +388,10 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
 
     private enum Page {
         ITEMS("物品栏", "物品", "items"), OVERVIEW("概览", "概览", "overview"), ATTRIBUTES("属性", "属性", "attributes"),
-        STATUS("状态", "状态", "status"), MOTION("位置与运动", "位置", "motion"), RAW("原始数据", "原始", "raw"), OTHER("其他数据", "其他", "other");
+        STATUS("状态", "状态", "status"), MOTION("位置与运动", "位置", "motion"), RAW("原始数据", "原始", "raw"), OTHER("其他数据", "其他", "other"),
+        ACTIONS("实体操作", "操作", "actions");
         final String title, shortTitle, key;
         Page(String title, String shortTitle, String key) { this.title = title; this.shortTitle = shortTitle; this.key = key; }
     }
-    private record RawLine(String text, String path, boolean branch, String detail) {}
+    private record RawLine(String text, String path, boolean branch, String detail, Tag tag) {}
 }
