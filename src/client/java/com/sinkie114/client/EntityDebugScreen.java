@@ -4,12 +4,9 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
-import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.renderer.RenderPipelines;
-import net.minecraft.nbt.CollectionTag;
-import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.Tag;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.Entity;
@@ -17,137 +14,83 @@ import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
-import org.lwjgl.glfw.GLFW;
 import java.util.*;
 
-/** Single-chest dimensions and inventory coordinates, with a separate tab strip above. */
-public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebugMenu> {
+/**
+ * The inventory tab of the entity editor: single-chest dimensions and inventory coordinates,
+ * with the editor's mode tabs above. Leaving the tab closes the container and returns to the editor.
+ */
+public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebugMenu> implements EntityNbtLayer {
     private static final Identifier BACKGROUND = Identifier.withDefaultNamespace("textures/gui/container/generic_54.png");
-    private static final int CONTENT_X = 8, CONTENT_TOP = 18, CONTENT_BOTTOM = 68, CONTENT_RIGHT = 166;
-    private static final int PLAYER_TOP = 85, TAB_TOP = -22, TAB_HEIGHT = 22, TAB_STEP = 25;
+    private static final int CONTENT_X = 8, CONTENT_TOP = 18;
+    private static final int PLAYER_TOP = 85, TAB_TOP = -22, TAB_HEIGHT = 22;
     private final Entity target;
     private final EntityEditBridge.Session session;
+    private final EntityNbtSession nbt;
     private final List<EntityItems.Entry> remoteEntries;
-    private EntitySnapshot snapshot;
-    private Page page = Page.ITEMS;
-    private int scroll, horizontalScroll, maxScroll, maxHorizontalScroll;
-    private boolean tabInput, pageSynced;
-    private final Set<String> expanded = new HashSet<>(Set.of("Entity"));
-    private List<RawLine> rawLines = List.of();
-    private List<String> lines = List.of();
+    private boolean tabInput;
     private final List<Button> tabs = new ArrayList<>();
-    private final Map<EntityAction, Button> actionButtons = new EnumMap<>(EntityAction.class);
-    private Button copyButton;
 
-    public EntityDebugScreen(Entity target, EntityDebugMenu menu, EntityEditBridge.Session session) {
+    public EntityDebugScreen(Entity target, EntityDebugMenu menu, EntityEditBridge.Session session, EntityNbtSession nbt) {
         super(menu, menu.inventory, Component.literal("实体调试查看器"));
         this.target = target;
         this.session = session;
+        this.nbt = nbt;
         this.remoteEntries = session == null ? EntityItems.discover(target, false) : List.of();
-        snapshot = session != null && session.snapshot != null ? session.snapshot : EntitySnapshot.capture(target, false, remoteEntries);
         imageWidth = 176;
         imageHeight = 168;
         inventoryLabelY = 74;
         refreshRemoteItems();
     }
 
-    public static EntityDebugScreen readOnly(Entity target, Inventory inventory) {
+    public static EntityDebugScreen readOnly(Entity target, Inventory inventory) { return readOnly(target, inventory, null); }
+
+    public static EntityDebugScreen readOnly(Entity target, Inventory inventory, EntityNbtSession nbt) {
         var entries = EntityItems.discover(target, false);
         var menu = EntityDebugMenu.client(-114, entries.stream().map(EntityItems.Entry::description).toList(), inventory, false);
         menu.setClientTarget(target);
-        return new EntityDebugScreen(target, menu, null);
+        return new EntityDebugScreen(target, menu, null, nbt);
     }
+
+    @Override public EntityNbtSession session() { return nbt; }
 
     @Override protected void init() {
         super.init();
+        EntityNbtSession.resume(nbt);
         menu.layout(CONTENT_X, CONTENT_TOP, PLAYER_TOP);
-        menu.setItemsPage(page == Page.ITEMS);
+        menu.setItemsPage(true);
         tabs.clear();
-        for (Page candidate : Page.values()) {
-            Button button = Button.builder(Component.literal(candidate.shortTitle), b -> selectPage(candidate))
-                    .bounds(tabLeft() + candidate.ordinal() * TAB_STEP, topPos + TAB_TOP, TAB_STEP - 1, TAB_HEIGHT)
-                    .tooltip(Tooltip.create(Component.literal(candidate.title))).build();
-            tabs.add(addRenderableWidget(button));
-        }
-        addActionButtons();
-        updateTabs();
-        rebuildLines();
-    }
-
-    private void selectPage(Page selected) {
-        if (page == selected) return;
-        page = selected;
-        scroll = horizontalScroll = 0;
-        isQuickCrafting = false;
-        quickCraftSlots.clear();
-        clearDraggingState();
-        hoveredSlot = null;
-        menu.setItemsPage(page == Page.ITEMS);
-        pageSynced = false;
-        syncPage();
-        updateTabs();
-        rebuildLines();
-    }
-
-    private void syncPage() {
-        if (!pageSynced && session != null && menu.ready && minecraft.player.containerMenu == menu) {
-            minecraft.gameMode.handleInventoryButtonClick(menu.containerId, page == Page.ITEMS ? 0 : 1);
-            pageSynced = true;
+        if (nbt != null) {
+            EditorMode[] modes = EditorMode.values();
+            for (int i = 0; i < modes.length; i++) {
+                EditorMode mode = modes[i];
+                Button button = Button.builder(Component.literal(mode.shortTitle), b -> navigate(mode))
+                        .bounds(leftPos + 1 + i * 44, topPos + TAB_TOP, 43, TAB_HEIGHT)
+                        .tooltip(Tooltip.create(Component.literal(mode.title))).build();
+                button.active = mode != EditorMode.INVENTORY;
+                tabs.add(addRenderableWidget(button));
+            }
         }
     }
 
-    private void updateTabs() {
-        for (int i = 0; i < tabs.size(); i++) tabs.get(i).active = i != page.ordinal();
-        updateActionButtons();
+    /** Closes the container the vanilla way, then shows the requested editor tab. */
+    private void navigate(EditorMode mode) {
+        if (nbt == null || mode == EditorMode.INVENTORY) return;
+        leaveContainer();
+        if (minecraft.screen == this || minecraft.screen == null || minecraft.screen instanceof EntityNbtLayer) nbt.go(mode);
     }
 
-    /** The tab strip is centred over the panel and may be slightly wider than it. */
-    private int tabLeft() {
-        return leftPos + (imageWidth - (Page.values().length * TAB_STEP - 1)) / 2;
-    }
-
-    /** A 3 × 3 grid inside the content area; only actions this entity supports are shown. */
-    private void addActionButtons() {
-        actionButtons.clear();
-        int index = 0;
-        for (EntityAction action : EntityAction.values()) {
-            if (!snapshot.actions().containsKey(action)) continue;
-            Button button = Button.builder(Component.literal(action.label), b -> runAction(action))
-                    .bounds(actionX(index), actionY(index), 52, 16)
-                    .tooltip(Tooltip.create(Component.literal(action.help + (session == null ? "\n多人模式：只读，无法修改实体" : "")))).build();
-            actionButtons.put(action, addRenderableWidget(button));
-            index++;
+    private void leaveContainer() {
+        if (session != null) {
+            session.closed = true;
+            if (minecraft.player != null) minecraft.player.closeContainer();
         }
-        copyButton = addRenderableWidget(Button.builder(Component.literal("复制NBT"), b -> copyRaw())
-                .bounds(actionX(index), actionY(index), 52, 16)
-                .tooltip(Tooltip.create(Component.literal(session == null ? "复制客户端可见的实体数据（SNBT）" : "复制完整实体 NBT（SNBT）"))).build());
-    }
-    private int actionX(int index) { return leftPos + CONTENT_X + index % 3 * 54; }
-    private int actionY(int index) { return topPos + CONTENT_TOP + index / 3 * 18; }
-
-    private void updateActionButtons() {
-        boolean shown = page == Page.ACTIONS;
-        actionButtons.forEach((action, button) -> {
-            button.visible = shown;
-            button.active = session != null && menu.ready && menu.canEdit();
-            Boolean state = snapshot.actions().get(action);
-            button.setMessage(Component.literal(action.toggle ? action.label + ":" + (Boolean.TRUE.equals(state) ? "开" : "关") : action.label));
-        });
-        if (copyButton != null) copyButton.visible = shown;
     }
 
-    private void runAction(EntityAction action) {
-        if (session == null || !menu.ready || !menu.canEdit() || minecraft.player.containerMenu != menu) return;
-        minecraft.gameMode.handleInventoryButtonClick(menu.containerId, action.button);
-    }
-
-    private void copyRaw() {
-        copy(snapshot.raw(), "实体 NBT");
-    }
-
-    private void copy(Tag tag, String what) {
-        minecraft.keyboardHandler.setClipboard(tag.toString());
-        if (minecraft.player != null) minecraft.player.displayClientMessage(Component.literal("已复制" + what + "（SNBT）"), true);
+    /** Back to the editor tab the user came from; also used when the server closes the container. */
+    public void showEditor() {
+        if (minecraft.screen != this) return;
+        if (nbt != null) nbt.showEditor(); else minecraft.setScreen(null);
     }
 
     private void refreshRemoteItems() {
@@ -161,32 +104,21 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
                 || target.level() != minecraft.level || minecraft.level.getEntity(target.getId()) != target;
         if (session != null) {
             menu.invalid |= session.invalid;
-            if (!menu.invalid && session.snapshot != null) snapshot = session.snapshot;
             if (menu.invalid) session.invalid = true;
-            syncPage();
         } else if (!menu.invalid) {
             refreshRemoteItems();
-            snapshot = EntitySnapshot.capture(target, false, remoteEntries);
         }
-        // The first snapshot may be client-side; rebuild once the server reports a different action set.
-        if (!actionButtons.keySet().equals(snapshot.actions().keySet())) rebuildWidgets();
-        else updateActionButtons();
-        rebuildLines();
     }
 
     @Override protected void renderBg(GuiGraphics g, float delta, int mouseX, int mouseY) {
         g.blit(RenderPipelines.GUI_TEXTURED, BACKGROUND, leftPos, topPos, 0, 0, imageWidth, 71, 256, 256);
         g.blit(RenderPipelines.GUI_TEXTURED, BACKGROUND, leftPos, topPos + 71, 0, 126, imageWidth, 96, 256, 256);
-        // Remove the texture's placeholder slots: display only actual entity slots on the inventory tab.
+        // Remove the texture's placeholder slots: display only actual entity slots.
         g.fill(leftPos + 7, topPos + 17, leftPos + 169, topPos + 71, 0xFFC6C6C6);
-        if (page == Page.ITEMS) {
-            for (int i = 0; i < menu.descriptions.size(); i++) {
-                Slot slot = menu.slots.get(i);
-                if (!slot.isActive()) continue;
-                g.blit(RenderPipelines.GUI_TEXTURED, BACKGROUND, leftPos + slot.x - 1, topPos + slot.y - 1, 7, 17, 18, 18, 256, 256);
-            }
-        } else {
-            g.fill(leftPos + 7, topPos + 17, leftPos + 169, topPos + 71, 0xFFB0B0B0);
+        for (int i = 0; i < menu.descriptions.size(); i++) {
+            Slot slot = menu.slots.get(i);
+            if (!slot.isActive()) continue;
+            g.blit(RenderPipelines.GUI_TEXTURED, BACKGROUND, leftPos + slot.x - 1, topPos + slot.y - 1, 7, 17, 18, 18, 256, 256);
         }
     }
 
@@ -195,42 +127,26 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
     }
 
     @Override protected void renderLabels(GuiGraphics g, int mouseX, int mouseY) {
-        String title = snapshot.name().getString();
-        String rows = page == Page.ITEMS && menu.otherPages() > 1
-                ? (menu.otherPage + 1) + "/" + menu.otherPages() : "";
+        String title = target.getDisplayName().getString();
+        String rows = menu.otherPages() > 1 ? (menu.otherPage + 1) + "/" + menu.otherPages() : "";
         g.drawString(font, font.plainSubstrByWidth(title, 160 - font.width(rows)), 8, 6, 0xFF404040, false);
         if (!rows.isEmpty()) g.drawString(font, rows, 168 - font.width(rows), 6, 0xFF404040, false);
         g.drawString(font, playerInventoryTitle, 8, inventoryLabelY, 0xFF404040, false);
         String mode = modeLabel();
         g.drawString(font, mode, 168 - font.width(mode), inventoryLabelY, menu.invalid ? 0xFFAA2222 : 0xFF404040, false);
-        if (page == Page.ITEMS) {
-            if (menu.descriptions.isEmpty()) g.drawCenteredString(font, "此实体没有物品槽位", 88, 38, 0xFF555555);
-            if (menu.otherPages() > 1) g.drawString(font, "滚轮翻页", 124, 40, 0xFF555555, false);
-            for (int i = 0; i < menu.descriptions.size(); i++) {
-                Slot slot = menu.slots.get(i);
-                if (!slot.isActive() || slot.hasItem()) continue;
-                var description = menu.descriptions.get(i);
-                String label = description.key().startsWith("inventory.") ? description.key().substring(10) : description.label();
-                g.pose().pushMatrix();
-                g.pose().translate(slot.x + 8, slot.y + 6);
-                g.pose().scale(0.5F, 0.5F);
-                String shortLabel = font.plainSubstrByWidth(label, 32);
-                g.drawString(font, shortLabel, -font.width(shortLabel) / 2, 0, 0xFFD0D0D0, false);
-                g.pose().popMatrix();
-            }
-            return;
-        }
-        if (page == Page.ACTIONS) return;
-        g.enableScissor(CONTENT_X, CONTENT_TOP, CONTENT_RIGHT, CONTENT_BOTTOM);
-        int first = scroll / 10;
-        int last = Math.min(lines.size(), (scroll + CONTENT_BOTTOM - CONTENT_TOP) / 10 + 1);
-        for (int i = first; i < last; i++) g.drawString(font, lines.get(i), CONTENT_X - horizontalScroll, CONTENT_TOP + i * 10 - scroll, 0xFF303030, false);
-        g.disableScissor();
-        if (maxScroll > 0) {
-            int height = CONTENT_BOTTOM - CONTENT_TOP;
-            int barHeight = Math.max(6, height * height / (lines.size() * 10));
-            int barY = CONTENT_TOP + (height - barHeight) * scroll / maxScroll;
-            g.fill(167, barY, 169, barY + barHeight, 0xFF666666);
+        if (menu.descriptions.isEmpty()) g.drawCenteredString(font, "此实体没有物品槽位", 88, 38, 0xFF555555);
+        if (menu.otherPages() > 1) g.drawString(font, "滚轮翻页", 124, 40, 0xFF555555, false);
+        for (int i = 0; i < menu.descriptions.size(); i++) {
+            Slot slot = menu.slots.get(i);
+            if (!slot.isActive() || slot.hasItem()) continue;
+            var description = menu.descriptions.get(i);
+            String label = description.key().startsWith("inventory.") ? description.key().substring(10) : description.label();
+            g.pose().pushMatrix();
+            g.pose().translate(slot.x + 8, slot.y + 6);
+            g.pose().scale(0.5F, 0.5F);
+            String shortLabel = font.plainSubstrByWidth(label, 32);
+            g.drawString(font, shortLabel, -font.width(shortLabel) / 2, 0, 0xFFD0D0D0, false);
+            g.pose().popMatrix();
         }
     }
 
@@ -240,15 +156,10 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
         if (hoveredSlot != null && hoveredSlot.index < menu.descriptions.size() && !hoveredSlot.hasItem()) {
             g.setTooltipForNextFrame(Component.literal(menu.descriptions.get(hoveredSlot.index).label()), mouseX, mouseY);
         }
-        if (page != Page.ITEMS && page != Page.ACTIONS && inContent(mouseX, mouseY)) {
-            int row = (mouseY - topPos - CONTENT_TOP + scroll) / 10;
-            if (row >= 0 && row < lines.size() && (page == Page.RAW || font.width(lines.get(row)) > CONTENT_RIGHT - CONTENT_X)) {
-                String detail = page == Page.RAW ? rawLines.get(row).detail() : lines.get(row);
-                g.setTooltipForNextFrame(font, font.split(Component.literal(detail), Math.min(320, width - 24)), mouseX, mouseY);
-            }
-        }
         if (isHovering(8, 4, 160, 12, mouseX, mouseY)) {
-            g.setComponentTooltipForNextFrame(font, List.of(snapshot.name(), Component.literal(snapshot.id()), Component.literal("UUID: " + snapshot.uuid())), mouseX, mouseY);
+            g.setComponentTooltipForNextFrame(font, List.of(target.getDisplayName(),
+                    Component.literal(BuiltInRegistries.ENTITY_TYPE.getKey(target.getType()).toString()),
+                    Component.literal("UUID: " + target.getUUID())), mouseX, mouseY);
         } else if (isHovering(117, 72, 52, 10, mouseX, mouseY)) {
             String detail = menu.invalid ? "目标已失效，保留最后数据，编辑已禁用"
                     : session == null ? "多人模式：实体和玩家物品栏均只读" : "集成服务器：修改立即生效；创造模式支持中键复制";
@@ -279,35 +190,20 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
         return x >= leftPos + CONTENT_X && x < leftPos + 169 && y >= topPos + 17 && y < topPos + 71;
     }
     private boolean inTabs(double x, double y) {
-        return x >= tabLeft() && x < tabLeft() + Page.values().length * TAB_STEP && y >= topPos + TAB_TOP && y < topPos;
+        return x >= leftPos && x < leftPos + imageWidth && y >= topPos + TAB_TOP && y < topPos;
     }
 
     @Override public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
-        // Action buttons live inside the content area; route them like tabs so slots never see the click.
-        if (inTabs(event.x(), event.y()) || page == Page.ACTIONS && inContent(event.x(), event.y())) {
+        if (inTabs(event.x(), event.y())) {
             tabInput = true;
             super.mouseClicked(event, doubleClick);
-            return true;
-        }
-        if (page != Page.ITEMS && inContent(event.x(), event.y())) {
-            if (page == Page.RAW) {
-                int row = (int) ((event.y() - topPos - CONTENT_TOP + scroll) / 10);
-                if (row >= 0 && row < rawLines.size()) {
-                    RawLine line = rawLines.get(row);
-                    if (event.button() == 1) copy(line.tag(), " " + line.path() + " ");
-                    else if (event.button() == 0 && line.branch()) {
-                        if (!expanded.remove(line.path())) expanded.add(line.path());
-                        rebuildLines();
-                    }
-                }
-            }
             return true;
         }
         return super.mouseClicked(event, doubleClick);
     }
 
     @Override public boolean mouseReleased(MouseButtonEvent event) {
-        if (tabInput || inTabs(event.x(), event.y()) || page != Page.ITEMS && inContent(event.x(), event.y())) {
+        if (tabInput || inTabs(event.x(), event.y())) {
             // Fabric forwards releases to the focused widget while Screen.isDragging remains true.
             setDragging(false);
             if (tabInput && getFocused() != null) getFocused().mouseReleased(event);
@@ -326,72 +222,18 @@ public final class EntityDebugScreen extends AbstractContainerScreen<EntityDebug
 
     @Override public boolean mouseScrolled(double x, double y, double horizontal, double vertical) {
         if (inContent(x, y)) {
-            if (page == Page.ITEMS) {
-                if (isQuickCrafting) return true;
-                menu.otherPage = Math.max(0, Math.min(menu.otherPages() - 1, menu.otherPage - (int) Math.signum(vertical)));
-                menu.layout(CONTENT_X, CONTENT_TOP, PLAYER_TOP);
-                hoveredSlot = null;
-            } else {
-                scroll = Math.max(0, Math.min(maxScroll, scroll - (int) (vertical * 20)));
-                horizontalScroll = Math.max(0, Math.min(maxHorizontalScroll, horizontalScroll - (int) (horizontal * 20)));
-            }
+            if (isQuickCrafting) return true;
+            menu.otherPage = Math.max(0, Math.min(menu.otherPages() - 1, menu.otherPage - (int) Math.signum(vertical)));
+            menu.layout(CONTENT_X, CONTENT_TOP, PLAYER_TOP);
+            hoveredSlot = null;
             return true;
         }
         return super.mouseScrolled(x, y, horizontal, vertical);
     }
 
-    private void rebuildLines() {
-        if (page == Page.ITEMS || page == Page.ACTIONS) { lines = List.of(); maxScroll = maxHorizontalScroll = scroll = horizontalScroll = 0; return; }
-        if (page == Page.RAW) {
-            List<RawLine> raw = new ArrayList<>();
-            flatten(raw, "Entity", "Entity", snapshot.raw(), 0);
-            rawLines = List.copyOf(raw);
-            lines = rawLines.stream().map(RawLine::text).toList();
-        } else {
-            lines = snapshot.pages().getOrDefault(page.key, List.of());
-            if (lines.isEmpty()) lines = List.of("没有可显示的数据");
-        }
-        maxScroll = Math.max(0, lines.size() * 10 - (CONTENT_BOTTOM - CONTENT_TOP));
-        maxHorizontalScroll = Math.max(0, lines.stream().mapToInt(font::width).max().orElse(0) - (CONTENT_RIGHT - CONTENT_X));
-        scroll = Math.min(scroll, maxScroll);
-        horizontalScroll = Math.min(horizontalScroll, maxHorizontalScroll);
-    }
-
-    private void flatten(List<RawLine> out, String name, String path, Tag tag, int depth) {
-        boolean branch = tag instanceof CompoundTag || tag instanceof CollectionTag;
-        String value = tag instanceof CompoundTag compound ? compound.size() + " 个字段"
-                : tag instanceof CollectionTag list ? list.size() + " 项" : tag.toString();
-        String type = tag.getClass().getSimpleName().replace("Tag", "");
-        String prefix = branch ? expanded.contains(path) ? "▼ " : "▶ " : "  ";
-        out.add(new RawLine("  ".repeat(depth) + prefix + name + " [" + type + "] " + value,
-                path, branch, "路径: " + path + "\n类型: " + type + "\n值: " + value + "\n右键复制此节点（SNBT）", tag));
-        if (!branch || !expanded.contains(path)) return;
-        if (tag instanceof CompoundTag compound) {
-            for (String key : compound.keySet().stream().sorted().toList()) flatten(out, key, path + "[\"" + key.replace("\\", "\\\\").replace("\"", "\\\"") + "\"]", compound.get(key), depth + 1);
-        } else if (tag instanceof CollectionTag list) {
-            for (int i = 0; i < list.size(); i++) flatten(out, "[" + i + "]", path + "[" + i + "]", list.get(i), depth + 1);
-        }
-    }
-
-    @Override public boolean keyPressed(KeyEvent event) {
-        if (page != Page.ITEMS && (event.key() == GLFW.GLFW_KEY_LEFT || event.key() == GLFW.GLFW_KEY_RIGHT)) {
-            horizontalScroll = Math.max(0, Math.min(maxHorizontalScroll, horizontalScroll + (event.key() == GLFW.GLFW_KEY_RIGHT ? 30 : -30)));
-            return true;
-        }
-        return super.keyPressed(event);
-    }
-
+    /** Esc returns to the editor; the container is closed first so carried items go back to the player. */
     @Override public void onClose() {
-        if (session == null) minecraft.setScreen(null);
-        else { session.closed = true; super.onClose(); }
+        leaveContainer();
+        showEditor();
     }
-
-    private enum Page {
-        ITEMS("物品栏", "物品", "items"), OVERVIEW("概览", "概览", "overview"), ATTRIBUTES("属性", "属性", "attributes"),
-        STATUS("状态", "状态", "status"), MOTION("位置与运动", "位置", "motion"), RAW("原始数据", "原始", "raw"), OTHER("其他数据", "其他", "other"),
-        ACTIONS("实体操作", "操作", "actions");
-        final String title, shortTitle, key;
-        Page(String title, String shortTitle, String key) { this.title = title; this.shortTitle = shortTitle; this.key = key; }
-    }
-    private record RawLine(String text, String path, boolean branch, String detail, Tag tag) {}
 }

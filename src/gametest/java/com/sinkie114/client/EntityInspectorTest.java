@@ -116,7 +116,6 @@ public final class EntityInspectorTest implements FabricClientGameTest {
             });
             testVillagerAi(context, server, villagerId);
             testChestTabsAndCloning(context, server, villagerId);
-            testEntityActions(context, server, villagerId);
             // Right-click half, place one; remaining carried stack returns on close.
             click(context, "player.1", 1, ClickType.PICKUP);
             click(context, "inventory.0", 1, ClickType.PICKUP);
@@ -221,6 +220,7 @@ public final class EntityInspectorTest implements FabricClientGameTest {
             testOtherInventories(context, server);
             testShiftVisualOrder(context, server);
             testStatusPage(server, villagerId);
+            EntityEditorTest.exercise(context, server, villagerId);
             // Protection must also work while the inspector is closed.
             testVillagerAi(context, server, villagerId);
         }
@@ -591,47 +591,16 @@ public final class EntityInspectorTest implements FabricClientGameTest {
         context.waitTicks(3);
     }
 
-    private static void testEntityActions(ClientGameTestContext context, TestServerContext server, UUID villagerId) {
-        selectTab(context, "操作");
-        context.runOnClient(c -> {
-            var screen = (EntityDebugScreen)c.screen;
-            check(screen.getMenu().slots.subList(0, screen.getMenu().descriptions.size()).stream().noneMatch(Slot::isActive), "The actions tab must hide entity slots");
-            for (var child : screen.children()) if (child instanceof Button button && button.visible)
-                check(c.font.width(button.getMessage()) <= button.getWidth() - 4, "Action text must fit: " + button.getMessage().getString());
-        });
-        // The villager starts with NoAI; each click goes through a vanilla button packet to the integrated server.
-        selectTab(context, "无AI:开");
-        context.waitFor(c -> hasButton(c, "无AI:关"));
-        server.runOnServer(s -> check(!((Villager)s.overworld().getEntity(villagerId)).isNoAi(), "Toggling NoAI must reach the real entity"));
-        selectTab(context, "无AI:关");
-        context.waitFor(c -> hasButton(c, "无AI:开"));
-        selectTab(context, "发光:关");
-        context.waitFor(c -> hasButton(c, "发光:开"));
-        server.runOnServer(s -> check(((Villager)s.overworld().getEntity(villagerId)).hasGlowingTag(), "Toggling glowing must reach the real entity"));
-        selectTab(context, "发光:开");
-        context.waitFor(c -> hasButton(c, "发光:关"));
-        server.runOnServer(s -> ((Villager)s.overworld().getEntity(villagerId)).setHealth(1));
-        selectTab(context, "回满血");
-        server.runOnServer(s -> {
-            var villager = (Villager)s.overworld().getEntity(villagerId);
-            check(villager.getHealth() == villager.getMaxHealth(), "Heal must restore full health");
-            check(villager.isNoAi() && !villager.hasGlowingTag(), "Toggles must be restored for later checks");
-        });
-        selectTab(context, "物品");
-    }
-
-    private static boolean hasButton(net.minecraft.client.Minecraft c, String label) {
-        return c.screen != null && c.screen.children().stream().anyMatch(child -> child instanceof Button b && b.visible && b.getMessage().getString().equals(label));
-    }
-
+    /**
+     * The inventory screen only has the items page now (the other tabs moved into the NBT editor),
+     * but the menu still hides its entity slots when the page is off; drive that state directly.
+     */
     private static void selectTab(ClientGameTestContext context, String label) {
         context.runOnClient(c -> {
-            var screen = (EntityDebugScreen)c.screen;
-            var button = screen.children().stream().filter(child -> child instanceof Button b && b.getMessage().getString().equals(label))
-                    .map(child -> (Button)child).findFirst().orElseThrow();
-            var event = new MouseButtonEvent(button.getX() + button.getWidth() / 2.0, button.getY() + button.getHeight() / 2.0, new MouseButtonInfo(0, 0));
-            screen.mouseClicked(event, false);
-            screen.mouseReleased(event);
+            var menu = ((EntityDebugScreen)c.screen).getMenu();
+            boolean items = label.equals("物品");
+            menu.setItemsPage(items);
+            if (c.player.containerMenu == menu && menu.ready) c.gameMode.handleInventoryButtonClick(menu.containerId, items ? 0 : 1);
         });
         context.waitTicks(2);
     }

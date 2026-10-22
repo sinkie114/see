@@ -102,16 +102,8 @@ public final class EntityDebugMenu extends AbstractContainerMenu {
         resetQuickCraft();
     }
     @Override public boolean clickMenuButton(Player player, int button) {
-        if (button == 0 || button == 1) {
-            setItemsPage(button == 0);
-            return true;
-        }
-        // Quick entity actions are applied by the integrated server's menu only, never by a client copy.
-        EntityAction action = EntityAction.byButton(button);
-        if (action == null || session == null || !(player instanceof ServerPlayer serverPlayer)
-                || !validate(serverPlayer) || !canEdit() || !action.supports(target, true)) return false;
-        action.apply(target);
-        tickServer(serverPlayer);
+        if (button != 0 && button != 1) return false;
+        setItemsPage(button == 0);
         return true;
     }
     public boolean canEdit() {
