@@ -7,7 +7,9 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.util.ProblemReporter;
 import net.minecraft.world.entity.*;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.npc.villager.Villager;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.level.storage.TagValueOutput;
 import java.util.*;
 
@@ -22,10 +24,10 @@ public record EntitySnapshot(Component name, String id, String uuid, Map<String,
         overview.add("UUID: " + e.getUUID());
         overview.add("网络 ID: " + e.getId());
         overview.add("维度: " + e.level().dimension().identifier());
-        overview.add("坐标: " + e.position());
+        overview.add("坐标: " + vec(e.position()));
         overview.add("方块坐标: " + e.blockPosition().toShortString());
         overview.add("尺寸: " + e.getBbWidth() + " × " + e.getBbHeight());
-        overview.add("碰撞箱: " + e.getBoundingBox());
+        overview.add("碰撞箱: " + vec(e.getBoundingBox().getMinPosition()) + " → " + vec(e.getBoundingBox().getMaxPosition()));
         overview.add("姿势: " + e.getPose());
         if (e instanceof LivingEntity l) overview.add("生命: " + l.getHealth() + " / " + l.getMaxHealth());
         pages.put("overview", List.copyOf(overview));
@@ -52,7 +54,8 @@ public record EntitySnapshot(Component name, String id, String uuid, Map<String,
             state.add("吸收生命: " + l.getAbsorptionAmount());
             state.add("嵌入箭: " + l.getArrowCount() + " / 蜂刺: " + l.getStingerCount());
             l.getActiveEffects().forEach(effect -> state.add("效果: " + Component.translatable(effect.getDescriptionId()).getString()
-                    + " " + (effect.getAmplifier() + 1) + "  " + effect.getDuration() + " ticks"));
+                    + " " + (effect.getAmplifier() + 1) + "  " + (effect.isInfiniteDuration() ? "无限"
+                    : effect.getDuration() / 20.0 + " 秒（" + effect.getDuration() + " 刻）")));
         }
         if (e instanceof Mob mob) {
             state.add("AI 启用: " + !mob.isNoAi());
@@ -65,9 +68,16 @@ public record EntitySnapshot(Component name, String id, String uuid, Map<String,
             state.add("已驯服: " + tame.isTame());
             state.add("坐下姿势: " + tame.isInSittingPose());
         }
+        if (e instanceof Villager villager) {
+            var data = villager.getVillagerData();
+            String profession = data.profession().unwrapKey().map(key -> key.identifier()).map(id ->
+                    Component.translatable("entity." + id.getNamespace() + ".villager." + id.getPath()).getString() + " (" + id + ")").orElse("?");
+            state.add("职业: " + profession + " · 等级 " + data.level());
+            state.add("村民类型: " + data.type().unwrapKey().map(key -> key.identifier().toString()).orElse("?"));
+        }
         pages.put("status", List.copyOf(state));
-        pages.put("motion", List.of("坐标: " + e.position(), "旋转: yaw=" + e.getYRot() + " pitch=" + e.getXRot(),
-                "速度: " + e.getDeltaMovement(), "地面: " + e.onGround(), "水平碰撞: " + e.horizontalCollision,
+        pages.put("motion", List.of("坐标: " + vec(e.position()), String.format(Locale.ROOT, "旋转: yaw=%.1f pitch=%.1f", e.getYRot(), e.getXRot()),
+                "速度: " + vec(e.getDeltaMovement()), "地面: " + e.onGround(), "水平碰撞: " + e.horizontalCollision,
                 "垂直碰撞: " + e.verticalCollision, "下落距离: " + e.fallDistance));
 
         CompoundTag raw = new CompoundTag();
@@ -84,6 +94,11 @@ public record EntitySnapshot(Component name, String id, String uuid, Map<String,
             raw.put("Pos", vector(e.getX(), e.getY(), e.getZ()));
             raw.put("Motion", vector(e.getDeltaMovement().x, e.getDeltaMovement().y, e.getDeltaMovement().z));
             raw.put("Rotation", vector(e.getYRot(), e.getXRot()));
+        }
+        if (server) {
+            List<String> status = new ArrayList<>(pages.get("status"));
+            trades(raw, status);
+            pages.put("status", List.copyOf(status));
         }
         CompoundTag synced = new CompoundTag();
         for (var data : ((EntityDataAccessor) e.getEntityData()).see$items()) {
@@ -118,6 +133,33 @@ public record EntitySnapshot(Component name, String id, String uuid, Map<String,
         return new EntitySnapshot(e.getDisplayName().copy(), BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString(),
                 e.getUUID().toString(), Map.copyOf(pages), raw);
     }
+    /** Coordinates to three decimals; the raw page keeps the exact values. */
+    private static String vec(Vec3 v) {
+        return String.format(Locale.ROOT, "%.3f, %.3f, %.3f", v.x, v.y, v.z);
+    }
+
+    /** Trade list and merchant XP, read from the saved data the raw page already holds (server only). */
+    private static void trades(CompoundTag raw, List<String> out) {
+        raw.getInt("Xp").ifPresent(xp -> out.add("交易经验: " + xp));
+        ListTag recipes = raw.get("Offers") instanceof ListTag list ? list : raw.getCompoundOrEmpty("Offers").getListOrEmpty("Recipes");
+        if (recipes.isEmpty()) return;
+        out.add("交易 " + recipes.size() + " 项:");
+        for (int i = 0; i < recipes.size(); i++) {
+            CompoundTag offer = recipes.getCompoundOrEmpty(i);
+            String cost = item(offer.getCompoundOrEmpty("buy"));
+            if (offer.get("buyB") instanceof CompoundTag second && !second.isEmpty()) cost += " + " + item(second);
+            out.add("  " + (i + 1) + ". " + cost + " → " + item(offer.getCompoundOrEmpty("sell"))
+                    + "  已用 " + offer.getIntOr("uses", 0) + "/" + offer.getIntOr("maxUses", 0));
+        }
+    }
+
+    private static String item(CompoundTag stack) {
+        String id = stack.getStringOr("id", "minecraft:air");
+        var parsed = net.minecraft.resources.Identifier.tryParse(id);
+        String name = parsed == null ? id : BuiltInRegistries.ITEM.get(parsed).map(h -> h.value().getName().getString()).orElse(id);
+        return stack.getIntOr("count", 1) + "×" + name;
+    }
+
     private static ListTag vector(double... values) {
         ListTag list = new ListTag();
         for (double value : values) list.add(DoubleTag.valueOf(value));
