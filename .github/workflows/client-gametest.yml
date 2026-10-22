@@ -1,0 +1,39 @@
+# Runs the client game tests in src/gametest inside a real (virtual-display)
+# Minecraft client, so every push and pull request is checked in game, not
+# only compiled.
+
+name: client gametest
+on: [pull_request, push]
+
+jobs:
+  client-gametest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@v6
+      - name: validate gradle wrapper
+        uses: gradle/actions/wrapper-validation@v6
+      - name: setup jdk
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'microsoft'
+      - name: install virtual display
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q xvfb libgl1-mesa-dri
+      - name: run client game tests
+        run: |
+          chmod +x ./gradlew
+          xvfb-run -a -s "-screen 0 1920x1080x24" ./gradlew runClientGameTest --stacktrace
+      - name: upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: client-gametest
+          path: |
+            build/run/clientGameTest/screenshots/
+            build/run/clientGameTest/logs/
+            build/run/clientGameTest/crash-reports/
+          if-no-files-found: ignore
