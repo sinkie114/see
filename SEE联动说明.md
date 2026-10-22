@@ -1,6 +1,6 @@
 # SEE × NBT Maker
 
-联动版本：**SEE 1.0.7 + NBT Maker 1.0.1**，Minecraft 1.21.11 Fabric。两个模组均可单独使用，联动时同时安装这两个版本。
+联动版本：**SEE 1.0.7 + NBT Maker 1.0.1** 起，Minecraft 1.21.11 Fabric。两个模组均可单独使用，联动时同时安装。SEE 1.0.10 起包名改为 `com.sinkie114.see`，需要 **NBT Maker 1.0.8 或更高版本** 才能联动；NBT Maker 1.0.8 同时兼容旧版 SEE。
 
 ## 用法
 
@@ -35,7 +35,7 @@ SEE 提供不依赖 NBT Maker 的公开物品访问接口；NBT Maker 按需调�
 在 NBT Maker 项目目录可重跑联动测试：
 
 ```bat
-build-local.bat --offline "-PseeCompatJar=E:/see-template-1.21.11/build/libs/see-1.0.7.jar" runClientGameTest
+build-local.bat --offline "-PseeCompatJar=E:/see-template-1.21.11/build/libs/see-1.0.10.jar" runClientGameTest
 ```
 
 联动测试位于 `src/seeGametest`，仅在提供 `seeCompatJar` 参数时加入测试源码，不进入发布 JAR。普通构建仍使用 `build-local.bat --offline build`。
